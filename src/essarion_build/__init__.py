@@ -10,22 +10,30 @@ from ._config import configure
 from ._context import Context
 from ._decorators import ReasonedFunction, list_reasoned, reasoned
 from ._generate import Generation, generate
+from ._providers import Usage
 from ._reasoning import Reasoning, reason
 from ._skills import list_skills
 from .exceptions import (
     CloudRuntimeNotAvailable,
     ContextError,
     EssarionError,
+    ProviderAuthError,
+    ProviderError,
+    ProviderHTTPError,
     ProviderNotAvailable,
+    ProviderRateLimitError,
+    ProviderResponseError,
+    ReasoningFormatError,
 )
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
     "Context",
     "Reasoning",
     "Generation",
     "ReasonedFunction",
+    "Usage",
     "reason",
     "generate",
     "reasoned",
@@ -35,6 +43,12 @@ __all__ = [
     "EssarionError",
     "CloudRuntimeNotAvailable",
     "ProviderNotAvailable",
+    "ProviderError",
+    "ProviderAuthError",
+    "ProviderRateLimitError",
+    "ProviderHTTPError",
+    "ProviderResponseError",
     "ContextError",
+    "ReasoningFormatError",
     "__version__",
 ]

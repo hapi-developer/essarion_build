@@ -29,22 +29,24 @@ from essarion_build import Context, reason, generate
 
 ctx = (
     Context()
-      .with_all_skills()                 # ← 21 bundled coding-practice skills
-      .add_repo("./")                    # ← ground in your codebase
+      .with_all_skills()                 # 21 bundled coding-practice skills
+      .add_repo("./")                    # ground in your codebase
       .add_docs("https://datatracker.ietf.org/doc/html/rfc7519")
 )
 
 # Pure reasoning — returns a plan, no code yet
 r = reason("harden JWT signature check", context=ctx)
-print(r.plan)        # the numbered reasoning trace
-print(r.tradeoffs)   # what was considered and rejected
-print(r.verdict)     # "ship" or "do not ship without X"
+print(r.plan)                  # the numbered reasoning trace
+print(r.tradeoffs)             # what was considered and rejected
+print(r.verdict)               # "ship" or "do not ship without X"
+print(r.usage.total_tokens)    # token cost across the whole loop
 
 # Reason + produce code — returns reasoning AND a snippet
 g = generate("harden JWT signature check", context=ctx)
-print(g.code)        # the proposed change
-print(g.reasoning)   # the underlying Reasoning object
-print(g.defense)     # one-paragraph "why this is safe to ship"
+print(g.code)                  # the proposed change
+print(g.reasoning)             # the underlying Reasoning object
+print(g.defense)               # one-paragraph "why this is safe to ship"
+print(g.usage.total_tokens)    # token cost across plan + draft + selfcheck
 ```
 
 ## Bundled software-dev skills
@@ -70,6 +72,37 @@ ctx = Context().with_all_skills()
 
 Each skill is a short, actionable brief. `secure_coding` covers input validation, output encoding, secret handling, and crypto defaults. `scope_discipline` covers staying within scope. `testing` covers what to test and how. The full set is bundled with the package; no network calls.
 
+## Token budgeting and usage tracking
+
+Every `reason()` and `generate()` result carries a `usage` field with prompt, completion, total, and provider-reported cached token counts:
+
+```python
+r = reason("...", context=ctx)
+print(r.usage)
+# Usage(prompt_tokens=2618, completion_tokens=373, total_tokens=2991, cached_tokens=0)
+```
+
+Cap the per-call budget without changing the module default:
+
+```python
+g = generate("...", context=ctx, max_tokens=1500)
+```
+
+Or set the budget globally:
+
+```python
+import essarion_build
+essarion_build.configure(max_tokens=2000)
+```
+
+The runtime divides the budget across the 2 calls (`reason`) or 3 calls (`generate`) in the loop, plus any one-shot tag-repair retries (see below). Usage from those retries is included in the total.
+
+## Cheap-model survival kit
+
+Small models drop XML tags. When the model returns a selfcheck without the `<defense>` tag, the runtime asks once for just the missing tag(s) and merges the result. If even the repair pass fails, you get a typed `ReasoningFormatError` — not a silently empty `defense` field.
+
+You don't have to opt in; this happens automatically inside `LiteRuntime`.
+
 ## The `@reasoned` decorator
 
 Mark functions you want the future `essarion-build` CLI to enumerate. In normal Python execution the original body runs unchanged — the decorator just records the function in a module-level registry.
@@ -90,7 +123,7 @@ The Provider seam keeps `essarion_build` model-agnostic. v0 ships two concrete p
 | Provider | Env var | Default model | Notes |
 |---|---|---|---|
 | `openrouter` (default) | `OPENROUTER_API_KEY` | `openai/gpt-4o-mini` | Routes to ~any model behind one OpenAI-compatible API. The cheap-default story. |
-| `anthropic` | `ANTHROPIC_API_KEY` | (provide one, e.g. `claude-sonnet-4-6`) | Direct to the Claude API. |
+| `anthropic` | `ANTHROPIC_API_KEY` | (provide one, e.g. `claude-sonnet-4-6`) | Direct to the Claude API. Uses prompt caching on the system block. |
 
 Switch globally or per-call:
 
@@ -98,16 +131,33 @@ Switch globally or per-call:
 import essarion_build
 
 # Stay on OpenRouter but use a stronger model
-essarion_build.configure(model="anthropic/claude-sonnet-4-6")  # OpenRouter slug
+essarion_build.configure(model="anthropic/claude-sonnet-4.6")  # OpenRouter slug
 
 # Or switch provider entirely
 essarion_build.configure(provider="anthropic", model="claude-sonnet-4-6")
 
 # Or per-call
-generate("...", provider="anthropic", model="claude-sonnet-4-6")
+generate("...", provider="anthropic", model="claude-sonnet-4-6", max_tokens=1500)
 ```
 
 Asking for a provider that isn't shipped raises `ProviderNotAvailable`. v0.2 will add Gemini, local-OSS via Ollama, etc.
+
+## Error handling
+
+Provider failures map to typed exceptions all rooted at `EssarionError`:
+
+| Exception | When |
+|---|---|
+| `ProviderAuthError` | HTTP 401/403 (bad or missing key) |
+| `ProviderRateLimitError` | HTTP 429 after exhausting retries |
+| `ProviderHTTPError` | Other non-2xx, or network errors after retries |
+| `ProviderResponseError` | Provider returned 2xx but the body was unparseable |
+| `ReasoningFormatError` | Model output still missing required tags after one repair pass |
+| `CloudRuntimeNotAvailable` | `runtime="cloud"` requested (not yet shipped) |
+| `ProviderNotAvailable` | Unknown provider name |
+| `ContextError` | Bad input to a `Context` method |
+
+Transient HTTP errors (429, 5xx, connection errors) get up to 2 retries with exponential backoff before surfacing.
 
 ## Lite vs Cloud
 

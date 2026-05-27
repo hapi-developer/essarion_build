@@ -15,11 +15,56 @@ local-OSS via Ollama, etc., without breaking the user-facing surface.
 from __future__ import annotations
 
 import os
+import time
 from typing import Any, Protocol
 
 import httpx
+from pydantic import BaseModel
 
-from .exceptions import ProviderNotAvailable
+from .exceptions import (
+    ProviderAuthError,
+    ProviderHTTPError,
+    ProviderNotAvailable,
+    ProviderRateLimitError,
+    ProviderResponseError,
+)
+
+
+class Usage(BaseModel):
+    """Token usage for one or more provider calls.
+
+    `cached_tokens` is provider-reported cache hits (Anthropic prompt caching,
+    OpenRouter prompt caching where supported). Zero when the provider doesn't
+    report it.
+    """
+
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    cached_tokens: int = 0
+
+    def __add__(self, other: "Usage") -> "Usage":
+        return Usage(
+            prompt_tokens=self.prompt_tokens + other.prompt_tokens,
+            completion_tokens=self.completion_tokens + other.completion_tokens,
+            total_tokens=self.total_tokens + other.total_tokens,
+            cached_tokens=self.cached_tokens + other.cached_tokens,
+        )
+
+
+class ProviderResponse(BaseModel):
+    """One Provider.complete() result: the text and the usage it cost."""
+
+    text: str
+    usage: Usage
+
+
+# HTTP retry policy for transient failures. Two retries with short exponential
+# backoff — enough to absorb a single 429 / 502 blip without papering over real
+# outages or driving up cost on cheap models.
+_RETRYABLE_STATUSES = {429, 500, 502, 503, 504}
+_MAX_HTTP_ATTEMPTS = 3
+_BACKOFF_BASE_SECONDS = 1.0
 
 
 class Provider(Protocol):
@@ -38,7 +83,7 @@ class Provider(Protocol):
         system: str,
         messages: list[dict[str, Any]],
         max_tokens: int,
-    ) -> str:
+    ) -> ProviderResponse:
         ...
 
 
@@ -69,27 +114,67 @@ class _AnthropicProvider:
         system: str,
         messages: list[dict[str, Any]],
         max_tokens: int,
-    ) -> str:
-        response = self._client.messages.create(
-            model=self.model,
-            max_tokens=max_tokens,
-            system=[
-                {
-                    "type": "text",
-                    "text": system,
-                    "cache_control": {"type": "ephemeral"},
-                }
-            ],
-            messages=messages,
+    ) -> ProviderResponse:
+        from anthropic import (
+            APIStatusError,
+            AuthenticationError,
+            RateLimitError,
         )
+
+        try:
+            response = self._client.messages.create(
+                model=self.model,
+                max_tokens=max_tokens,
+                system=[
+                    {
+                        "type": "text",
+                        "text": system,
+                        "cache_control": {"type": "ephemeral"},
+                    }
+                ],
+                messages=messages,
+            )
+        except AuthenticationError as e:
+            raise ProviderAuthError(
+                f"Anthropic rejected the API key for model {self.model!r}: {e}"
+            ) from e
+        except RateLimitError as e:
+            raise ProviderRateLimitError(
+                f"Anthropic rate-limited the request for model {self.model!r}: {e}"
+            ) from e
+        except APIStatusError as e:
+            raise ProviderHTTPError(
+                f"Anthropic returned HTTP {e.status_code} for model {self.model!r}: {e}"
+            ) from e
+
         out: list[str] = []
         for block in response.content:
             if getattr(block, "type", None) == "text":
                 out.append(block.text)
-        return "".join(out)
+
+        usage_obj = getattr(response, "usage", None)
+        if usage_obj is None:
+            usage = Usage()
+        else:
+            prompt = getattr(usage_obj, "input_tokens", 0) or 0
+            completion = getattr(usage_obj, "output_tokens", 0) or 0
+            cached_read = getattr(usage_obj, "cache_read_input_tokens", 0) or 0
+            cached_write = getattr(usage_obj, "cache_creation_input_tokens", 0) or 0
+            usage = Usage(
+                prompt_tokens=prompt,
+                completion_tokens=completion,
+                total_tokens=prompt + completion,
+                cached_tokens=cached_read + cached_write,
+            )
+        return ProviderResponse(text="".join(out), usage=usage)
 
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+
+
+def _sleep_backoff(attempt: int) -> None:
+    """Sleep before the (attempt+1)-th try. Indirected so tests can monkeypatch."""
+    time.sleep(_BACKOFF_BASE_SECONDS * (2 ** attempt))
 
 
 class _OpenRouterProvider:
@@ -97,6 +182,9 @@ class _OpenRouterProvider:
 
     Default provider in v0. OpenRouter routes to ~any model behind one API,
     which keeps the SDK's BYOK story honest while staying cheap.
+
+    The HTTP client is created per `complete()` call so the provider never
+    leaks file descriptors when reason()/generate() raise mid-loop.
     """
 
     def __init__(self, *, api_key: str | None = None, model: str) -> None:
@@ -108,18 +196,16 @@ class _OpenRouterProvider:
             )
         self._api_key = resolved_key
         self.model = model
-        self._client = httpx.Client(
-            base_url=OPENROUTER_BASE_URL,
-            timeout=httpx.Timeout(120.0),
-            headers={
-                "Authorization": f"Bearer {resolved_key}",
-                "Content-Type": "application/json",
-                # OpenRouter encourages identifying the integration so models
-                # can be billed and rate-limited correctly.
-                "HTTP-Referer": "https://essarion.com",
-                "X-Title": "essarion-build",
-            },
-        )
+
+    def _headers(self) -> dict[str, str]:
+        return {
+            "Authorization": f"Bearer {self._api_key}",
+            "Content-Type": "application/json",
+            # OpenRouter encourages identifying the integration so models can
+            # be billed and rate-limited correctly.
+            "HTTP-Referer": "https://essarion.com",
+            "X-Title": "essarion-build",
+        }
 
     def complete(
         self,
@@ -127,7 +213,7 @@ class _OpenRouterProvider:
         system: str,
         messages: list[dict[str, Any]],
         max_tokens: int,
-    ) -> str:
+    ) -> ProviderResponse:
         body = {
             "model": self.model,
             "max_tokens": max_tokens,
@@ -136,15 +222,77 @@ class _OpenRouterProvider:
                 *messages,
             ],
         }
-        response = self._client.post("/chat/completions", json=body)
-        response.raise_for_status()
-        data = response.json()
-        try:
-            return data["choices"][0]["message"]["content"] or ""
-        except (KeyError, IndexError, TypeError) as e:
-            raise RuntimeError(
-                f"OpenRouter returned an unexpected response shape: {data!r}"
-            ) from e
+
+        last_error: Exception | None = None
+        with httpx.Client(
+            base_url=OPENROUTER_BASE_URL,
+            timeout=httpx.Timeout(120.0),
+            headers=self._headers(),
+        ) as client:
+            for attempt in range(_MAX_HTTP_ATTEMPTS):
+                try:
+                    response = client.post("/chat/completions", json=body)
+                except httpx.HTTPError as e:
+                    last_error = e
+                    if attempt + 1 < _MAX_HTTP_ATTEMPTS:
+                        _sleep_backoff(attempt)
+                        continue
+                    raise ProviderHTTPError(
+                        f"OpenRouter network error for model {self.model!r}: {e}"
+                    ) from e
+
+                if response.status_code in _RETRYABLE_STATUSES and attempt + 1 < _MAX_HTTP_ATTEMPTS:
+                    _sleep_backoff(attempt)
+                    continue
+
+                if response.status_code in (401, 403):
+                    raise ProviderAuthError(
+                        f"OpenRouter rejected the API key (HTTP {response.status_code}) "
+                        f"for model {self.model!r}: {response.text[:500]}"
+                    )
+                if response.status_code == 429:
+                    raise ProviderRateLimitError(
+                        f"OpenRouter rate-limited the request for model {self.model!r}: "
+                        f"{response.text[:500]}"
+                    )
+                if response.status_code >= 400:
+                    raise ProviderHTTPError(
+                        f"OpenRouter returned HTTP {response.status_code} for model "
+                        f"{self.model!r}: {response.text[:500]}"
+                    )
+
+                return _parse_openrouter_response(response.json(), model=self.model)
+
+        # Defensive: the loop above always returns or raises, but guard anyway.
+        raise ProviderHTTPError(
+            f"OpenRouter network error for model {self.model!r}: {last_error}"
+        )
+
+
+def _parse_openrouter_response(data: dict[str, Any], *, model: str) -> ProviderResponse:
+    try:
+        text = data["choices"][0]["message"]["content"] or ""
+    except (KeyError, IndexError, TypeError) as e:
+        raise ProviderResponseError(
+            f"OpenRouter returned an unexpected response shape for model {model!r}: {data!r}"
+        ) from e
+
+    raw_usage = data.get("usage") or {}
+    prompt = int(raw_usage.get("prompt_tokens", 0) or 0)
+    completion = int(raw_usage.get("completion_tokens", 0) or 0)
+    total = int(raw_usage.get("total_tokens", prompt + completion) or 0)
+    # OpenRouter sometimes nests cached counts inside prompt_tokens_details.
+    cached = 0
+    details = raw_usage.get("prompt_tokens_details") or {}
+    if isinstance(details, dict):
+        cached = int(details.get("cached_tokens", 0) or 0)
+    usage = Usage(
+        prompt_tokens=prompt,
+        completion_tokens=completion,
+        total_tokens=total,
+        cached_tokens=cached,
+    )
+    return ProviderResponse(text=text, usage=usage)
 
 
 def build_provider(*, name: str, api_key: str | None, model: str) -> Provider:
