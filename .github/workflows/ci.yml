@@ -1,0 +1,79 @@
+name: CI
+
+# Run on every push and PR. Same matrix as the publish job's test step,
+# but cheaper to debug because it's decoupled from the tag-driven release
+# pipeline.
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Test (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install package + test extras
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[test]"
+      - name: Run tests
+        run: pytest tests/ -v
+
+  cli-smoke:
+    name: CLI smoke test
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install
+        run: pip install -e .
+      - name: essarion-build version
+        run: essarion-build version
+      - name: essarion-build skills count
+        run: |
+          count=$(essarion-build skills | wc -l)
+          echo "found $count skills"
+          if [ "$count" -lt 30 ]; then
+            echo "expected at least 30 skills, got $count" >&2
+            exit 1
+          fi
+      - name: essarion-build providers list
+        run: essarion-build providers
+      - name: essarion-build estimate self
+        run: essarion-build estimate --repo ./src --json
+
+  build:
+    name: Build sdist + wheel
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install build tools
+        run: pip install --upgrade build twine
+      - name: Build
+        run: python -m build
+      - name: Verify metadata
+        run: twine check dist/*

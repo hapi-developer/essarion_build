@@ -15,6 +15,7 @@ outputs. v0.3 ships:
 - CLI: `essarion-build`
 """
 
+from . import auth
 from ._async_api import agenerate, areason
 from ._batch import BatchResult, batch_generate, batch_reason, run_batch
 from ._async_providers import (
@@ -47,6 +48,14 @@ from ._reasoning import Reasoning, reason
 from ._runtime import LiteRuntime, Runtime, select_runtime
 from ._skills import list_skills, load_skill
 from ._prompts import configure_prompts, reset_prompts
+from .tools import (
+    Tool,
+    list_tools,
+    register_tool,
+    run_tools_in_plan,
+    tool_manifest,
+    unregister_tool,
+)
 from ._streaming import ReasoningEvent, stream_generate, stream_reason
 from ._telemetry import TelemetryCallback, configure_telemetry
 from .exceptions import (
@@ -114,6 +123,13 @@ __all__ = [
     # Prompt overrides
     "configure_prompts",
     "reset_prompts",
+    # Tool registry (model-side, opt-in)
+    "Tool",
+    "register_tool",
+    "unregister_tool",
+    "list_tools",
+    "run_tools_in_plan",
+    "tool_manifest",
     # Stub provider (for users' tests)
     "StubProvider",
     "AsyncStubProvider",
@@ -137,5 +153,6 @@ __all__ = [
     "ProviderResponseError",
     "ContextError",
     "ReasoningFormatError",
+    "auth",
     "__version__",
 ]
