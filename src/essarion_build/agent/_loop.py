@@ -620,6 +620,44 @@ def _maybe_handle_workflow(
     return True
 
 
+def _suggest_next_actions(console, session: Session, turn: TaskTurn) -> None:
+    """Print 2-3 suggested next slash commands based on what just happened.
+
+    Order (most-important first):
+    1. Budget warning if past 80% of cap
+    2. /fix if the verdict said "do not ship"
+    3. /diff /verify /commit if files were touched
+    4. /undo if code was generated but discarded
+    """
+    suggestions: list[str] = []
+
+    # 1. Budget nudge — always surface first when at risk.
+    if session.budget_usd > 0 and session.total_cost_usd > session.budget_usd * 0.8:
+        suggestions.append(
+            "[key]/budget[/key] [meta]you're at 80% of budget[/meta]"
+        )
+
+    # 2. Verdict-driven follow-up.
+    if turn.verdict and "do not ship" in turn.verdict.lower():
+        suggestions.append(
+            "[key]/fix <follow-up>[/key] [meta]address the blockers[/meta]"
+        )
+
+    # 3. Post-change suggestions.
+    if turn.files_touched:
+        suggestions.append("[key]/diff[/key] [meta]see the change[/meta]")
+        suggestions.append("[key]/verify[/key] [meta]run tests/lint[/meta]")
+        suggestions.append("[key]/commit[/key] [meta]git-commit[/meta]")
+    elif turn.code:
+        suggestions.append("[key]/undo[/key] [meta]revert[/meta]")
+
+    if not suggestions:
+        return
+    console.print(
+        "[hint]next:[/hint] " + "  ·  ".join(suggestions[:3])
+    )
+
+
 def _maybe_auto_verify(console, session: Session, turn: TaskTurn) -> None:
     """If the user has `[verify].auto = true` configured AND this turn
     wrote a file, run the check command and surface PASS/FAIL inline."""
@@ -767,6 +805,9 @@ def run_turn(console, session: Session, task: str) -> None:
 
     # 4.5 Auto-verify if configured.
     _maybe_auto_verify(console, session, turn)
+
+    # 4.6 Suggested next actions.
+    _suggest_next_actions(console, session, turn)
 
     # 5. Footer
     session.record(turn)

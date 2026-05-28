@@ -101,6 +101,82 @@ def test_autoload_picks_up_sibling_test(tmp_path: Path, console: Console) -> Non
     assert "tests/test_auth.py" in paths  # auto-loaded as related
 
 
+def test_suggest_next_actions_after_file_change(tmp_path: Path) -> None:
+    import io as _io
+
+    from essarion_build import Usage
+    from essarion_build.agent._session import Session, TaskTurn, new_session_id
+
+    buf = _io.StringIO()
+    c = Console(theme=ESSARION_THEME, file=buf, force_terminal=False, width=120)
+    session = Session(
+        id=new_session_id(),
+        cwd=str(tmp_path),
+        provider="openrouter",
+        model="openai/gpt-4o-mini",
+        budget_usd=1.00,
+    )
+    turn = TaskTurn(
+        task="fix the bug",
+        files_touched=["src/auth.py"],
+        usage=Usage(),
+    )
+    _loop._suggest_next_actions(c, session, turn)
+    out = buf.getvalue()
+    assert "/diff" in out
+    assert "/verify" in out
+    assert "/commit" in out
+
+
+def test_suggest_next_actions_after_do_not_ship_verdict(tmp_path: Path) -> None:
+    import io as _io
+
+    from essarion_build import Usage
+    from essarion_build.agent._session import Session, TaskTurn, new_session_id
+
+    buf = _io.StringIO()
+    c = Console(theme=ESSARION_THEME, file=buf, force_terminal=False, width=120)
+    session = Session(
+        id=new_session_id(),
+        cwd=str(tmp_path),
+        provider="openrouter",
+        model="openai/gpt-4o-mini",
+        budget_usd=1.00,
+    )
+    turn = TaskTurn(
+        task="audit it",
+        verdict="do not ship without addressing the SQL injection",
+        usage=Usage(),
+    )
+    _loop._suggest_next_actions(c, session, turn)
+    assert "/fix" in buf.getvalue()
+
+
+def test_suggest_next_actions_budget_warning(tmp_path: Path) -> None:
+    import io as _io
+
+    from essarion_build import Usage
+    from essarion_build.agent._session import Session, TaskTurn, new_session_id
+
+    buf = _io.StringIO()
+    c = Console(theme=ESSARION_THEME, file=buf, force_terminal=False, width=120)
+    session = Session(
+        id=new_session_id(),
+        cwd=str(tmp_path),
+        provider="openrouter",
+        model="openai/gpt-4o-mini",
+        budget_usd=1.00,
+    )
+    session.total_cost_usd = 0.85
+    turn = TaskTurn(
+        task="x",
+        files_touched=["src/x.py"],
+        usage=Usage(),
+    )
+    _loop._suggest_next_actions(c, session, turn)
+    assert "/budget" in buf.getvalue()
+
+
 def test_missing_api_key_shows_friendly_message(
     monkeypatch, console: Console, tmp_path: Path
 ) -> None:
