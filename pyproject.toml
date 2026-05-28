@@ -37,6 +37,9 @@ test = [
 
 [project.urls]
 Homepage = "https://essarion.com"
+Source = "https://github.com/hapi-developer/essarion_build"
+Issues = "https://github.com/hapi-developer/essarion_build/issues"
+Changelog = "https://github.com/hapi-developer/essarion_build/blob/main/CHANGELOG.md"
 
 [tool.setuptools.packages.find]
 where = ["src"]
