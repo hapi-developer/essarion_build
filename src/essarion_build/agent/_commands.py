@@ -29,7 +29,7 @@ _HELP_GROUPS: list[tuple[str, list[str]]] = [
     ("session", ["/whoami", "/history", "/summary", "/save", "/load", "/export", "/clear", "/version", "/quit"]),
     ("planning", ["/ask"]),
     ("workflows", ["/workflows", "/review", "/fix", "/tests", "/refactor", "/docs", "/security", "/perf", "/explain", "/pr"]),
-    ("models & cost", ["/model", "/escalate", "/budget", "/cost", "/stream"]),
+    ("models & cost", ["/model", "/escalate", "/budget", "/cost", "/stream", "/keys"]),
     ("skills & memory", ["/skills", "/remember", "/forget"]),
     ("project & files", ["/cd", "/pwd"]),
     ("changes & verify", ["/diff", "/undo", "/commit", "/verify", "/lint"]),
@@ -578,6 +578,59 @@ def _cmd_cost(console: Console, session: Session, args: str) -> CommandResult:
         f"[brand]{format_cost(session.total_cost_usd)}[/brand] "
         f"[meta]of budget ${session.budget_usd:.2f}[/meta]"
     )
+
+    # Runway projection: at current cost-per-turn, how many more turns fit?
+    n = len(session.history)
+    if n > 0 and session.budget_usd > 0:
+        avg_cost = session.total_cost_usd / n if n else 0
+        remaining = max(0.0, session.budget_usd - session.total_cost_usd)
+        runway = int(remaining / avg_cost) if avg_cost > 0 else 999
+        runway_style = "ok" if runway >= 5 else ("warn" if runway >= 1 else "err")
+        console.print(
+            f"[meta]avg/turn: {format_cost(avg_cost)}  "
+            f"·  budget left: [/meta][brand]{format_cost(remaining)}[/brand]"
+            f"[meta]  ·  runway: [/meta][{runway_style}]≈{runway} turn(s)[/{runway_style}]"
+        )
+    return "continue"
+
+
+def _cmd_keys(console: Console, session: Session, args: str) -> CommandResult:
+    """Show which provider API keys are set in the environment.
+
+    Doesn't print the key values — only whether they exist. Useful for
+    "why isn't this working?" debugging.
+    """
+    import os
+    from rich.table import Table
+
+    from .. import list_providers
+
+    PROVIDER_ENVS = {
+        "openrouter": "OPENROUTER_API_KEY",
+        "anthropic": "ANTHROPIC_API_KEY",
+        "openai": "OPENAI_API_KEY",
+        "gemini": "GEMINI_API_KEY",
+        "ollama": "(no key needed)",
+        "stub": "(no key needed)",
+    }
+    table = Table(title="provider keys", title_style="brand")
+    table.add_column("provider", style="key")
+    table.add_column("env var", style="meta")
+    table.add_column("set?")
+    for prov in list_providers():
+        env_var = PROVIDER_ENVS.get(prov, "(unknown)")
+        if env_var.startswith("("):
+            status = f"[meta]{env_var}[/meta]"
+        else:
+            # Also accept GOOGLE_API_KEY for Gemini.
+            alt = "GOOGLE_API_KEY" if prov == "gemini" else None
+            present = os.environ.get(env_var) or (alt and os.environ.get(alt))
+            status = f"[ok]yes[/ok]" if present else f"[err]no[/err]"
+        marker = ""
+        if prov == session.provider:
+            marker = " [hint]← current[/hint]"
+        table.add_row(prov, env_var, status + marker)
+    console.print(table)
     return "continue"
 
 
@@ -936,6 +989,7 @@ COMMANDS: dict[str, tuple[Callable, str]] = {
     "/whoami": (_cmd_whoami, "one-screen status: project + model + memory + budget"),
     "/summary": (_cmd_summary, "one-paragraph summary of this session — useful for commits/PRs"),
     "/workflows": (_cmd_workflows_list, "list bundled workflows + their slash shortcuts"),
+    "/keys": (_cmd_keys, "show which provider API keys are set in the env"),
     "/review": (_workflow_command("review"), "shortcut: workflows.review(<target>)"),
     "/fix": (_workflow_command("fix"), "shortcut: workflows.fix_bug(<target>)"),
     "/tests": (_workflow_command("tests"), "shortcut: workflows.write_tests(<target>)"),
