@@ -109,6 +109,10 @@ EXPECTED_SKILLS = {
     "kubernetes",
     "code_style",
     "code_smells",
+    "code_organization",
+    "networking",
+    "containers",
+    "distributed_systems",
 }
 
 
