@@ -19,6 +19,7 @@ export OPENROUTER_API_KEY=sk-or-...
 | 8 | [`08_cache.py`](08_cache.py) | Skip duplicate provider calls with `ResponseCache` |
 | 9 | [`09_agent_programmatic.py`](09_agent_programmatic.py) | Drive the `essarion` CLI agent's plan-first loop from Python |
 | 10 | [`10_project_setup.py`](10_project_setup.py) | Bootstrap a project for the agent: `.essarion/` + memory + custom commands |
+| 11 | [`11_reasoning_effort.py`](11_reasoning_effort.py) | Adaptive reasoning depth: `quick`/`standard`/`deep`/`max`/`auto` |
 
 Run any of them with `python examples/01_quick_start.py`.
 

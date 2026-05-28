@@ -65,10 +65,15 @@ you: review src/auth.py for JWT alg=none confusion
 
 ### Why use the agent (over Claude Code / Codex / Aider / Cursor)
 
-1. **Plan-first interactivity.** You see the plan and verdict BEFORE the
+1. **Adaptive reasoning depth.** Defaults to `effort="auto"` — a tiny
+   triage call sizes every task and routes trivial work to a 1-call plan
+   while reserving the deep critique→revise loop for tasks with real
+   stakes. You see the depth it chose. Override live with `/effort deep`.
+   This is the whole bet: better reasoning, paid for only where it counts.
+2. **Plan-first interactivity.** You see the plan and verdict BEFORE the
    draft is paid for. Edit it, reject it, or send it back. No other agent
    does this — most jump straight to writing code.
-2. **Live token-budget meter + projected cost.** Every session has a
+3. **Live token-budget meter + projected cost.** Every session has a
    configurable USD budget. Before each turn the agent prints a projected
    cost based on your current context size. After each turn you see the
    actual spend. `/cost <path>` lets you estimate against a hypothetical
@@ -111,6 +116,8 @@ essarion --provider anthropic --model claude-sonnet-4-6
 essarion --budget 5.00 --escalate claude-sonnet-4-6   # cheap+escalate
 essarion --resume 20260528-195838-5e4b    # continue a saved session
 essarion --skills all                     # load every skill (vs auto)
+essarion --effort deep                    # force deep reasoning every turn
+essarion --effort quick                   # force minimal reasoning (cheapest)
 
 # Subcommands fall through to the original CLI
 essarion skills                           # list bundled skills
@@ -297,6 +304,44 @@ print(g.reasoning)             # the underlying Reasoning object
 print(g.defense)               # one-paragraph "why this is safe to ship"
 print(g.usage.total_tokens)    # token cost across plan + draft + selfcheck
 ```
+
+## Adaptive reasoning effort — deep when it matters, cheap when it doesn't
+
+The headline feature. A one-line rename shouldn't cost the same as hardening a JWT validator. The `effort` parameter spends tokens **proportional to task difficulty**:
+
+| effort | reason() calls | what it does |
+|---|---|---|
+| `quick` | 1 | plan only — trivial tasks |
+| `standard` | 2 | plan + adversarial self-check (default) |
+| `deep` | 4 | plan → **critique** the plan → **revise** it → self-check |
+| `max` | 6 | + explore an **alternative** plan → **synthesize** the best of both |
+| `auto` | 1 triage + above | a tiny triage call sizes the task 1–5, then routes to quick/standard/deep automatically |
+
+```python
+from essarion_build import reason, Context
+
+ctx = Context().with_all_skills().add_repo("./")
+
+# Let Essarion size the task. Trivial → 1-2 calls; security-critical → 4.
+r = reason("harden JWT signature check", context=ctx, effort="auto")
+print(r.effort)        # e.g. "deep" — triage decided this one was worth it
+
+# Or pin the depth yourself.
+r = reason("rename `cfg` to `config`", context=ctx, effort="quick")    # 1 call
+r = reason("design the migration", context=ctx, effort="max")          # 6 calls
+```
+
+**Why this is cheap AND deep:** the extra calls in `deep`/`max` refine the *plan* — which is short — before any code is written. You pay a few hundred tokens to catch a design flaw, not thousands to regenerate a bad draft. The `auto` triage call caps its own output, so sizing a task costs almost nothing.
+
+Set a global default or seed from the environment:
+
+```python
+import essarion_build
+essarion_build.configure(effort="auto")        # every call sizes itself
+# or: export ESSARION_EFFORT=auto
+```
+
+The `essarion` CLI agent defaults to `effort="auto"` — it sizes every task you give it and tells you the depth it chose. Change it live with `/effort deep`.
 
 ## Bundled software-dev skills
 

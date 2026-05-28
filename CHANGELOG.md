@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — adaptive reasoning effort (headline)
+- New `effort` parameter on `reason()` / `generate()` / `areason()` /
+  `agenerate()`: `quick` (1 call), `standard` (2, default), `deep` (4 —
+  adds a critique→revise round on the plan), `max` (6 — adds an
+  alternative-plan→synthesis round), and `auto` (a tiny triage call
+  sizes the task 1–5 and routes to quick/standard/deep).
+- The refinement steps operate on the *plan* (short), so deeper effort
+  stays cheap relative to drafting code. Triage caps its own output.
+- `Reasoning.effort` / `Generation.reasoning.effort` report the depth
+  actually used (matters for `auto`).
+- `configure(effort=...)` global default; `ESSARION_EFFORT` env seed.
+- `approx_reason_calls()` / `approx_generate_calls()` helpers and
+  `EFFORT_LEVELS` / `VALID_EFFORTS` exported.
+- Strengthened the system prompt with an explicit reasoning method
+  (work backward from failure modes; find the load-bearing decision;
+  distrust the first idea; smallest correct change; never invent APIs).
+
+### Added — agent: reasoning depth
+- The `essarion` agent defaults to `effort="auto"` and announces the
+  resolved depth per turn ("reasoning depth: deep (auto-sized…)").
+- `/effort [quick|standard|deep|max|auto]` slash command (shows a cost
+  table with no arg).
+- `--effort` CLI flag and `[agent].effort` project-config key.
+- Banner + `/whoami` show the reasoning mode; pre-flight cost projection
+  and `/cost` account for the effort's call count.
+
 ## [0.3.0] - 2026-05-28
 
 The big "SDK + CLI coding agent" release. v0.2 was a focused
