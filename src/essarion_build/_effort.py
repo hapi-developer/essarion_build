@@ -72,6 +72,28 @@ def runs_reason_selfcheck(effort: str) -> bool:
     return effort != EFFORT_QUICK
 
 
+def verdict_signals_risk(verdict: str) -> bool:
+    """True when a verdict flags the plan/code as not yet shippable.
+
+    Used for output-gated escalation: when the model's own self-check says
+    "do not ship", `auto` spends one more refinement round rather than
+    handing back a flagged plan. Adaptive on the *output*, not just the
+    triaged input — and it only costs extra when the model is uncertain.
+    """
+    t = (verdict or "").lower()
+    return (
+        "do not ship" in t
+        or "not ship without" in t
+        or "cannot defend" in t
+        or "do not merge" in t
+    )
+
+
+# auto escalates at most this many times on a risk signal — a hard cap so a
+# perpetually-pessimistic model can't burn the budget.
+MAX_AUTO_ESCALATIONS = 1
+
+
 def effort_for_complexity(n: int) -> str:
     """Map a triage complexity (1-5) to a concrete effort level.
 
@@ -124,6 +146,8 @@ __all__ = [
     "plan_refinement_steps",
     "runs_reason_selfcheck",
     "effort_for_complexity",
+    "verdict_signals_risk",
+    "MAX_AUTO_ESCALATIONS",
     "approx_reason_calls",
     "approx_generate_calls",
 ]

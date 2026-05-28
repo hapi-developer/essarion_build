@@ -10,10 +10,15 @@ from ._context import Context
 from ._effort import (
     DEFAULT_EFFORT,
     EFFORT_AUTO,
+    EFFORT_DEEP,
+    EFFORT_QUICK,
+    EFFORT_STANDARD,
+    MAX_AUTO_ESCALATIONS,
     effort_for_complexity,
     plan_refinement_steps,
     runs_reason_selfcheck,
     validate_effort,
+    verdict_signals_risk,
 )
 from ._prompts import (
     current_alt_plan,
@@ -284,6 +289,33 @@ class LiteRuntime:
                 plan, tradeoffs, verdict = s["plan"], s["tradeoffs"], s["verdict"]
         return plan, tradeoffs, verdict
 
+    def _escalate_plan_once(
+        self,
+        *,
+        system: str,
+        messages: list[dict[str, Any]],
+        budget: int,
+        usage_accum: list[Usage],
+    ) -> tuple[str, str, str]:
+        """One critique → revise round on the existing plan thread.
+
+        Used for output-gated escalation in `auto` mode: when the model's
+        own self-check flags the plan as not shippable, we spend one more
+        refinement round instead of returning a flagged plan.
+        """
+        messages.append({"role": "user", "content": current_critique_plan()})
+        self._step(
+            system=system, messages=messages, max_tokens=budget,
+            usage_accum=usage_accum, required_tags=["critique"], phase="critique",
+        )
+        messages.append({"role": "user", "content": current_revise_plan()})
+        r = self._step(
+            system=system, messages=messages, max_tokens=budget,
+            usage_accum=usage_accum,
+            required_tags=["plan", "tradeoffs", "verdict"], phase="revise",
+        )
+        return r["plan"], r["tradeoffs"], r["verdict"]
+
     def reason(
         self,
         *,
@@ -298,6 +330,7 @@ class LiteRuntime:
         usage_accum: list[Usage] = []
         emit("loop_start", kind_of_loop="reason", model=self._provider.model)
 
+        was_auto = validate_effort(effort or DEFAULT_EFFORT) == EFFORT_AUTO
         resolved = self._resolve_effort(
             task=task, system=system, budget=budget,
             usage_accum=usage_accum, effort=effort,
@@ -323,6 +356,29 @@ class LiteRuntime:
             )
             verdict = sc["verdict"] or verdict
 
+        # Output-gated escalation: in auto mode, if the model's own verdict
+        # flags risk and we reasoned shallowly, spend one more round.
+        escalations = 0
+        while (
+            was_auto
+            and escalations < MAX_AUTO_ESCALATIONS
+            and resolved in (EFFORT_QUICK, EFFORT_STANDARD)
+            and verdict_signals_risk(verdict)
+        ):
+            emit("auto_escalate", from_effort=resolved, reason="verdict_signals_risk")
+            plan, tradeoffs, verdict = self._escalate_plan_once(
+                system=system, messages=messages, budget=budget,
+                usage_accum=usage_accum,
+            )
+            messages.append({"role": "user", "content": current_selfcheck_reason()})
+            sc2 = self._step(
+                system=system, messages=messages, max_tokens=budget,
+                usage_accum=usage_accum, required_tags=["verdict"], phase="selfcheck",
+            )
+            verdict = sc2["verdict"] or verdict
+            resolved = EFFORT_DEEP
+            escalations += 1
+
         total = sum(usage_accum, Usage())
         emit("loop_done", kind_of_loop="reason", usage=total.model_dump(), effort=resolved)
         return RuntimeResult(
@@ -347,6 +403,7 @@ class LiteRuntime:
         usage_accum: list[Usage] = []
         emit("loop_start", kind_of_loop="generate", model=self._provider.model)
 
+        was_auto = validate_effort(effort or DEFAULT_EFFORT) == EFFORT_AUTO
         resolved = self._resolve_effort(
             task=task, system=system, budget=budget,
             usage_accum=usage_accum, effort=effort,
@@ -359,6 +416,21 @@ class LiteRuntime:
             system=system, messages=messages, budget=budget,
             usage_accum=usage_accum, effort=resolved,
         )
+
+        # Output-gated escalation BEFORE drafting: if the plan's verdict
+        # flags risk and we planned shallowly, refine the plan first so the
+        # draft is built on solid ground (cheaper than regenerating code).
+        if (
+            was_auto
+            and resolved in (EFFORT_QUICK, EFFORT_STANDARD)
+            and verdict_signals_risk(verdict)
+        ):
+            emit("auto_escalate", from_effort=resolved, reason="plan_verdict_risk")
+            plan, tradeoffs, verdict = self._escalate_plan_once(
+                system=system, messages=messages, budget=budget,
+                usage_accum=usage_accum,
+            )
+            resolved = EFFORT_DEEP
 
         messages.append({"role": "user", "content": current_draft()})
         step2 = self._step(
