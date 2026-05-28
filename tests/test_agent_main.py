@@ -64,6 +64,26 @@ def test_main_runs_agent_non_interactive_with_task_arg(
     assert called["model"] == "stub-model"
 
 
+def test_cmd_init_creates_skeleton(tmp_path, capsys) -> None:
+    """`essarion init <path>` creates the .essarion/ skeleton."""
+    rc = agent_main.cmd_init([str(tmp_path)])
+    assert rc == 0
+    assert (tmp_path / ".essarion" / "config.toml").is_file()
+    assert (tmp_path / ".essarion" / "sessions").is_dir()
+
+
+def test_cmd_init_seeds_memory(tmp_path) -> None:
+    """`essarion init <path> --with-memory FACT` seeds memory.md."""
+    rc = agent_main.cmd_init(
+        [str(tmp_path), "--with-memory", "Use snake_case",
+         "--with-memory", "Tests in tests/"]
+    )
+    assert rc == 0
+    body = (tmp_path / ".essarion" / "memory.md").read_text()
+    assert "Use snake_case" in body
+    assert "Tests in tests/" in body
+
+
 def test_main_resume_loads_prior_session(monkeypatch, tmp_path) -> None:
     """`essarion --resume <id>` reads ~/.essarion/sessions/<id>.json."""
     monkeypatch.setenv("HOME", str(tmp_path))

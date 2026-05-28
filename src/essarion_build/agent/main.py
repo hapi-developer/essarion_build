@@ -156,13 +156,40 @@ def cmd_init(argv: list[str] | None = None) -> int:
     """`essarion init [<path>]` — create `.essarion/` in the chosen dir."""
     p = argparse.ArgumentParser(prog="essarion init", description="Initialize a project for the essarion agent.")
     p.add_argument("path", nargs="?", default=".", help="project root (default: cwd)")
+    p.add_argument(
+        "--with-memory",
+        action="append",
+        default=[],
+        metavar="FACT",
+        help="seed a fact into project memory (repeatable)",
+    )
     args = p.parse_args(argv)
     project = init_project(args.path)
     console = make_console()
     console.print(
-        f"[ok]initialized[/ok] [brand]{project.essarion_dir}[/brand]\n"
-        f"[meta]config:[/meta] {project.essarion_dir / 'config.toml'}\n"
-        f"[meta]sessions:[/meta] {project.essarion_dir / 'sessions'}"
+        f"[ok]initialized[/ok] [brand]{project.essarion_dir}[/brand]"
+    )
+    table_rows = [
+        ("config", str(project.essarion_dir / "config.toml")),
+        ("sessions", str(project.essarion_dir / "sessions")),
+    ]
+
+    if args.with_memory:
+        from ._memory import load_memory
+
+        memory = load_memory(args.path)
+        for fact in args.with_memory:
+            try:
+                memory.add_fact(fact)
+            except ValueError:
+                continue
+        memory.save()
+        table_rows.append(("memory", f"{memory.path} ({len(memory.facts)} fact(s) seeded)"))
+
+    for label, value in table_rows:
+        console.print(f"[meta]{label}:[/meta] {value}")
+    console.print(
+        "\n[hint]next: type `essarion` (no args) to launch the REPL.[/hint]"
     )
     return 0
 
