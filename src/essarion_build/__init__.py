@@ -31,6 +31,12 @@ from ._cache import CachingProvider, ResponseCache
 from ._compaction import compact, keep_only_files, truncate_files
 from ._config import configure
 from ._config_file import load_config_file, starter_skills
+from ._effort import (
+    EFFORT_LEVELS,
+    VALID_EFFORTS,
+    approx_generate_calls,
+    approx_reason_calls,
+)
 from ._context import Context, Diff
 from ._conversation import Conversation, ConversationTurn
 from ._decorators import ReasonedFunction, list_reasoned, reasoned
@@ -124,6 +130,11 @@ __all__ = [
     "configure",
     "load_config_file",
     "starter_skills",
+    # Reasoning effort (adaptive depth)
+    "EFFORT_LEVELS",
+    "VALID_EFFORTS",
+    "approx_reason_calls",
+    "approx_generate_calls",
     # Cache
     "ResponseCache",
     "CachingProvider",

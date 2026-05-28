@@ -7,12 +7,25 @@ from typing import Any, Protocol
 
 from ._config import current
 from ._context import Context
+from ._effort import (
+    DEFAULT_EFFORT,
+    EFFORT_AUTO,
+    effort_for_complexity,
+    plan_refinement_steps,
+    runs_reason_selfcheck,
+    validate_effort,
+)
 from ._prompts import (
+    current_alt_plan,
+    current_critique_plan,
     current_draft,
     current_plan,
+    current_revise_plan,
     current_selfcheck_generate,
     current_selfcheck_reason,
+    current_synthesize_plan,
     current_system,
+    current_triage,
 )
 from ._providers import Provider, Usage, build_provider
 from ._telemetry import emit
@@ -40,13 +53,23 @@ class Runtime(Protocol):
     """The seam essarion_build calls through. v0 has two concrete implementations."""
 
     def reason(
-        self, *, task: str, context: Context, max_tokens: int | None = None
+        self,
+        *,
+        task: str,
+        context: Context,
+        max_tokens: int | None = None,
+        effort: str | None = None,
     ) -> RuntimeResult:
         """Run the reasoning-only loop and return extracted tags + usage."""
         ...
 
     def generate(
-        self, *, task: str, context: Context, max_tokens: int | None = None
+        self,
+        *,
+        task: str,
+        context: Context,
+        max_tokens: int | None = None,
+        effort: str | None = None,
     ) -> RuntimeResult:
         """Run the full reason-and-draft loop and return extracted tags + usage."""
         ...
@@ -146,8 +169,128 @@ class LiteRuntime:
         )
         return tags
 
+    def _triage(
+        self,
+        *,
+        task: str,
+        system: str,
+        budget: int,
+        usage_accum: list[Usage],
+    ) -> int:
+        """One cheap classification call. Returns a complexity in 1..5.
+
+        Runs on its own short message thread (not the reasoning thread) and
+        caps output tokens hard — triage must stay cheap or it defeats the
+        purpose. Falls back to 3 (standard) if the model's output can't be
+        parsed.
+        """
+        triage_budget = min(budget, 256)
+        emit("phase_call", phase="triage", model=self._provider.model)
+        resp = self._provider.complete(
+            system=system,
+            messages=[{"role": "user", "content": current_triage().format(task=task)}],
+            max_tokens=triage_budget,
+        )
+        usage_accum.append(resp.usage)
+        raw = _extract_tag(resp.text, "complexity") or resp.text
+        match = re.search(r"[1-5]", raw)
+        n = int(match.group()) if match else 3
+        return max(1, min(5, n))
+
+    def _resolve_effort(
+        self,
+        *,
+        task: str,
+        system: str,
+        budget: int,
+        usage_accum: list[Usage],
+        effort: str | None,
+    ) -> str:
+        """Normalize effort; run triage when effort == 'auto'."""
+        e = validate_effort(effort or DEFAULT_EFFORT)
+        if e != EFFORT_AUTO:
+            return e
+        complexity = self._triage(
+            task=task, system=system, budget=budget, usage_accum=usage_accum
+        )
+        resolved = effort_for_complexity(complexity)
+        emit("triage", complexity=complexity, resolved_effort=resolved)
+        return resolved
+
+    def _run_plan_phase(
+        self,
+        *,
+        system: str,
+        messages: list[dict[str, Any]],
+        budget: int,
+        usage_accum: list[Usage],
+        effort: str,
+    ) -> tuple[str, str, str]:
+        """Initial plan + the effort's refinement steps. Returns the best
+        (plan, tradeoffs, verdict). Mutates `messages` so the caller can
+        continue (draft / selfcheck)."""
+        step = self._step(
+            system=system,
+            messages=messages,
+            max_tokens=budget,
+            usage_accum=usage_accum,
+            required_tags=["plan", "tradeoffs", "verdict"],
+            phase="plan",
+        )
+        plan, tradeoffs, verdict = step["plan"], step["tradeoffs"], step["verdict"]
+
+        for ref in plan_refinement_steps(effort):
+            if ref == "critique":
+                messages.append({"role": "user", "content": current_critique_plan()})
+                self._step(
+                    system=system,
+                    messages=messages,
+                    max_tokens=budget,
+                    usage_accum=usage_accum,
+                    required_tags=["critique"],
+                    phase="critique",
+                )
+            elif ref == "revise":
+                messages.append({"role": "user", "content": current_revise_plan()})
+                r = self._step(
+                    system=system,
+                    messages=messages,
+                    max_tokens=budget,
+                    usage_accum=usage_accum,
+                    required_tags=["plan", "tradeoffs", "verdict"],
+                    phase="revise",
+                )
+                plan, tradeoffs, verdict = r["plan"], r["tradeoffs"], r["verdict"]
+            elif ref == "alt":
+                messages.append({"role": "user", "content": current_alt_plan()})
+                self._step(
+                    system=system,
+                    messages=messages,
+                    max_tokens=budget,
+                    usage_accum=usage_accum,
+                    required_tags=["plan", "tradeoffs", "verdict"],
+                    phase="alt",
+                )
+            elif ref == "synthesize":
+                messages.append({"role": "user", "content": current_synthesize_plan()})
+                s = self._step(
+                    system=system,
+                    messages=messages,
+                    max_tokens=budget,
+                    usage_accum=usage_accum,
+                    required_tags=["plan", "tradeoffs", "verdict"],
+                    phase="synthesize",
+                )
+                plan, tradeoffs, verdict = s["plan"], s["tradeoffs"], s["verdict"]
+        return plan, tradeoffs, verdict
+
     def reason(
-        self, *, task: str, context: Context, max_tokens: int | None = None
+        self,
+        *,
+        task: str,
+        context: Context,
+        max_tokens: int | None = None,
+        effort: str | None = None,
     ) -> RuntimeResult:
         cfg = current()
         budget = max_tokens if max_tokens is not None else cfg.max_tokens
@@ -155,39 +298,48 @@ class LiteRuntime:
         usage_accum: list[Usage] = []
         emit("loop_start", kind_of_loop="reason", model=self._provider.model)
 
+        resolved = self._resolve_effort(
+            task=task, system=system, budget=budget,
+            usage_accum=usage_accum, effort=effort,
+        )
+
         messages: list[dict[str, Any]] = [
             {"role": "user", "content": current_plan().format(task=task)},
         ]
-        step1 = self._step(
-            system=system,
-            messages=messages,
-            max_tokens=budget,
-            usage_accum=usage_accum,
-            required_tags=["plan", "tradeoffs", "verdict"],
-            phase="plan",
+        plan, tradeoffs, verdict = self._run_plan_phase(
+            system=system, messages=messages, budget=budget,
+            usage_accum=usage_accum, effort=resolved,
         )
 
-        messages.append({"role": "user", "content": current_selfcheck_reason()})
-        step3 = self._step(
-            system=system,
-            messages=messages,
-            max_tokens=budget,
-            usage_accum=usage_accum,
-            required_tags=["verdict"],
-            phase="selfcheck",
-        )
+        if runs_reason_selfcheck(resolved):
+            messages.append({"role": "user", "content": current_selfcheck_reason()})
+            sc = self._step(
+                system=system,
+                messages=messages,
+                max_tokens=budget,
+                usage_accum=usage_accum,
+                required_tags=["verdict"],
+                phase="selfcheck",
+            )
+            verdict = sc["verdict"] or verdict
 
         total = sum(usage_accum, Usage())
-        emit("loop_done", kind_of_loop="reason", usage=total.model_dump())
+        emit("loop_done", kind_of_loop="reason", usage=total.model_dump(), effort=resolved)
         return RuntimeResult(
-            plan=step1["plan"],
-            tradeoffs=step1["tradeoffs"],
-            verdict=step3["verdict"] or step1["verdict"],
+            plan=plan,
+            tradeoffs=tradeoffs,
+            verdict=verdict,
             usage=total,
+            effort=resolved,
         )
 
     def generate(
-        self, *, task: str, context: Context, max_tokens: int | None = None
+        self,
+        *,
+        task: str,
+        context: Context,
+        max_tokens: int | None = None,
+        effort: str | None = None,
     ) -> RuntimeResult:
         cfg = current()
         budget = max_tokens if max_tokens is not None else cfg.max_tokens
@@ -195,16 +347,17 @@ class LiteRuntime:
         usage_accum: list[Usage] = []
         emit("loop_start", kind_of_loop="generate", model=self._provider.model)
 
+        resolved = self._resolve_effort(
+            task=task, system=system, budget=budget,
+            usage_accum=usage_accum, effort=effort,
+        )
+
         messages: list[dict[str, Any]] = [
             {"role": "user", "content": current_plan().format(task=task)},
         ]
-        step1 = self._step(
-            system=system,
-            messages=messages,
-            max_tokens=budget,
-            usage_accum=usage_accum,
-            required_tags=["plan", "tradeoffs", "verdict"],
-            phase="plan",
+        plan, tradeoffs, verdict = self._run_plan_phase(
+            system=system, messages=messages, budget=budget,
+            usage_accum=usage_accum, effort=resolved,
         )
 
         messages.append({"role": "user", "content": current_draft()})
@@ -228,14 +381,15 @@ class LiteRuntime:
         )
 
         total = sum(usage_accum, Usage())
-        emit("loop_done", kind_of_loop="generate", usage=total.model_dump())
+        emit("loop_done", kind_of_loop="generate", usage=total.model_dump(), effort=resolved)
         return RuntimeResult(
-            plan=step1["plan"],
-            tradeoffs=step1["tradeoffs"],
-            verdict=step3["verdict"] or step1["verdict"],
+            plan=plan,
+            tradeoffs=tradeoffs,
+            verdict=step3["verdict"] or verdict,
             code=step2["code"],
             defense=step3["defense"],
             usage=total,
+            effort=resolved,
         )
 
 
@@ -247,14 +401,24 @@ class CloudRuntime:
         self._model = model
 
     def reason(
-        self, *, task: str, context: Context, max_tokens: int | None = None
+        self,
+        *,
+        task: str,
+        context: Context,
+        max_tokens: int | None = None,
+        effort: str | None = None,
     ) -> RuntimeResult:
         raise CloudRuntimeNotAvailable(
             "Cloud runtime is coming soon. Use runtime='lite' (default) for now."
         )
 
     def generate(
-        self, *, task: str, context: Context, max_tokens: int | None = None
+        self,
+        *,
+        task: str,
+        context: Context,
+        max_tokens: int | None = None,
+        effort: str | None = None,
     ) -> RuntimeResult:
         raise CloudRuntimeNotAvailable(
             "Cloud runtime is coming soon. Use runtime='lite' (default) for now."

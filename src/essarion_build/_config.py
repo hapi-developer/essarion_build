@@ -24,6 +24,7 @@ from pydantic import BaseModel, Field
 DEFAULT_MODEL = "openai/gpt-4o-mini"
 DEFAULT_RUNTIME = "lite"
 DEFAULT_PROVIDER = "openrouter"
+DEFAULT_EFFORT = "standard"
 
 
 def _env_int(name: str, default: int) -> int:
@@ -42,6 +43,7 @@ class _Config(BaseModel):
     api_key: str | None = None
     model: str = Field(default_factory=lambda: os.environ.get("ESSARION_MODEL") or DEFAULT_MODEL)
     max_tokens: int = Field(default_factory=lambda: _env_int("ESSARION_MAX_TOKENS", 4096), ge=1)
+    effort: str = Field(default_factory=lambda: os.environ.get("ESSARION_EFFORT") or DEFAULT_EFFORT)
 
 
 _CONFIG = _Config()
@@ -54,6 +56,7 @@ def configure(
     api_key: str | None = None,
     model: str | None = None,
     max_tokens: int | None = None,
+    effort: str | None = None,
 ) -> None:
     """Set module-level defaults for reason() and generate().
 
@@ -69,6 +72,8 @@ def configure(
         _CONFIG.model = model
     if max_tokens is not None:
         _CONFIG.max_tokens = max_tokens
+    if effort is not None:
+        _CONFIG.effort = effort
 
 
 def current() -> _Config:

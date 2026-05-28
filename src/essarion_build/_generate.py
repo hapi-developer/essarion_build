@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
+from ._config import current
 from ._context import Context
 from ._providers import Usage
 from ._reasoning import Reasoning
@@ -35,20 +36,30 @@ def generate(
     api_key: str | None = None,
     model: str | None = None,
     max_tokens: int | None = None,
+    effort: str | None = None,
     _runtime: Runtime | None = None,
 ) -> Generation:
     """Run the reason-and-draft loop on `task` against `context`.
 
     Returns a Generation with `code`, `reasoning`, `defense`, and `usage`.
 
+    `effort` controls reasoning depth before drafting (see `reason()`):
+    "quick" / "standard" (default) / "deep" / "max" / "auto". Deeper
+    levels refine the *plan* (which is cheap) before the model writes
+    code, so you get a better draft without paying to regenerate it.
+
     Per-call kwargs override module defaults set via `configure()`.
     """
     ctx = context if context is not None else Context()
+    chosen_effort = effort or current().effort
     rt = _runtime or select_runtime(
         runtime=runtime, provider=provider, api_key=api_key, model=model
     )
-    fields = rt.generate(task=task, context=ctx, max_tokens=max_tokens)
+    fields = rt.generate(
+        task=task, context=ctx, max_tokens=max_tokens, effort=chosen_effort
+    )
     usage = fields.get("usage", Usage())
+    resolved_effort = fields.get("effort", chosen_effort)
     return Generation(
         code=fields["code"],
         reasoning=Reasoning(
@@ -56,6 +67,7 @@ def generate(
             tradeoffs=fields["tradeoffs"],
             verdict=fields["verdict"],
             usage=usage,
+            effort=resolved_effort,
         ),
         defense=fields["defense"],
         usage=usage,
