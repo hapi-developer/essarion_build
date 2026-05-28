@@ -16,6 +16,10 @@ Edge over Claude Code / Codex / Aider:
    to a stronger model only when selfcheck rejects.
 5. **Reasoning-trace persistence.** Sessions saved to ~/.essarion/sessions/
    so you can replay, fork, share.
+6. **Project folders.** Auto-detects the project root; per-project memory,
+   config, and session storage in `<root>/.essarion/`.
+7. **Background tasks.** /bg runs commands in parallel without blocking
+   the agent; completion notices fire between turns.
 
 Entry points:
 
@@ -23,6 +27,28 @@ Entry points:
 - `essarion <subcmd>`  → existing CLI subcommands (skills, reason, …)
 """
 
+from ._memory import Memory, load_memory, memory_path_for
+from ._project import Project, find_project_root, init_project
+from ._session import Session, TaskTurn, estimate_cost_usd
+from ._verify import VerifyResult, run_check
 from .main import run_agent
 
-__all__ = ["run_agent"]
+__all__ = [
+    # entry point
+    "run_agent",
+    # project
+    "Project",
+    "find_project_root",
+    "init_project",
+    # memory
+    "Memory",
+    "load_memory",
+    "memory_path_for",
+    # verify
+    "VerifyResult",
+    "run_check",
+    # session
+    "Session",
+    "TaskTurn",
+    "estimate_cost_usd",
+]

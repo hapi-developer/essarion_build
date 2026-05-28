@@ -183,5 +183,5 @@ def test_help_lists_new_commands(console, session) -> None:
     dispatch(console, session, "/help")
     out = _out(console)
     for cmd in ["/remember", "/forget", "/verify", "/diff", "/undo",
-                 "/commit", "/ask", "/subagent", "/review", "/fix"]:
+                 "/commit", "/ask", "/review", "/fix"]:
         assert cmd in out

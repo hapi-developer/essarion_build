@@ -583,31 +583,6 @@ def _cmd_bg(console: Console, session: Session, args: str) -> CommandResult:
         console.print(f"[err]failed to start[/err]: {task.stderr_tail[:1]}")
     return "continue"
 
-
-def _cmd_subagent(console: Console, session: Session, args: str) -> CommandResult:
-    """Spawn focused subagents in parallel for the task.
-
-    Usage:
-      /subagent <task>                 spawn the default crew (researcher,
-                                       implementer, test_writer) and synthesize
-      /subagent <role1,role2>:<task>   spawn specific roles in parallel
-    """
-    arg = args.strip()
-    if not arg:
-        console.print(
-            "[err]usage: /subagent <task>  ·  /subagent role1,role2:<task>[/err]"
-        )
-        console.print(
-            "[hint]roles: researcher implementer test_writer verifier reviewer refactorer[/hint]"
-        )
-        return "continue"
-
-    from ._loop import _dispatch_subagents
-
-    _dispatch_subagents(console, session, arg)
-    return "continue"
-
-
 # Public dispatch table: name → (function, description).
 COMMANDS: dict[str, tuple[Callable, str]] = {
     "/help": (_cmd_help, "show this list"),
@@ -632,7 +607,6 @@ COMMANDS: dict[str, tuple[Callable, str]] = {
     "/undo": (_cmd_undo, "revert the most recent agent-applied change"),
     "/commit": (_cmd_commit, "git-commit the session's changes"),
     "/ask": (_cmd_ask, "quick reason() only, no draft phase"),
-    "/subagent": (_cmd_subagent, "spawn parallel focused subagents (research/impl/tests/…)"),
     "/review": (_workflow_command("review"), "shortcut: workflows.review(<target>)"),
     "/fix": (_workflow_command("fix"), "shortcut: workflows.fix_bug(<target>)"),
     "/tests": (_workflow_command("tests"), "shortcut: workflows.write_tests(<target>)"),

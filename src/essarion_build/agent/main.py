@@ -109,6 +109,8 @@ def _apply_project_config(
     if args.skills == "auto" and "skills_mode" in agent_cfg:
         if agent_cfg["skills_mode"] in {"auto", "all", "none"}:
             args.skills = agent_cfg["skills_mode"]
+    # The auto_route flag is read by the loop later from project config —
+    # we don't fold it into argparse args, just stash it back via data.
     return data
 
 
