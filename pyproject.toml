@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "essarion-build"
-version = "0.4.1"
+version = "0.3.0"
 description = "BYOK reasoning amplification SDK + CLI coding agent. Plan-first, token-efficient, works with any LLM."
 readme = "README.md"
 license = { file = "LICENSE" }

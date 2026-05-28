@@ -97,10 +97,18 @@ def _build_context(
     task: str, *, session: Session, cwd: Path, console
 ) -> tuple[Context, list[str], str]:
     """Build the Context for one turn. Returns (ctx, picks, reason_for_picks)."""
+    from ._memory import inject_into_context, load_memory
+
     ctx = Context()
     picks, why = _pick_skills_for(task, session.skills_mode)
     if picks:
         ctx.with_skills(picks)
+    # Inject project memory (free signal — no model call).
+    try:
+        memory = load_memory(cwd)
+        inject_into_context(memory, ctx)
+    except Exception:  # noqa: BLE001 - memory must never break a turn
+        pass
     _autoload_files(task, cwd, ctx, console)
     return ctx, picks, why
 
@@ -322,6 +330,155 @@ def _maybe_handle_workflow(
     return True
 
 
+_DEFAULT_CREW: list[str] = ["researcher", "implementer", "test_writer"]
+
+
+def _dispatch_subagents(console, session: Session, raw_arg: str) -> None:
+    """Spawn focused subagents in parallel and synthesize their findings.
+
+    Two argument shapes:
+    - `<task>`                → default crew (researcher + implementer + test_writer)
+    - `role1,role2:<task>`    → explicit roles, comma-separated
+    """
+    from rich.live import Live
+    from rich.spinner import Spinner
+    from rich.table import Table
+
+    from ._subagent import (
+        SubAgentResult,
+        SubAgentSpec,
+        aggregate_usage,
+        run_subagents_parallel,
+    )
+    from ._session import TaskTurn
+
+    # Parse roles : task.
+    if ":" in raw_arg and not raw_arg.lstrip().startswith("/"):
+        head, task = raw_arg.split(":", 1)
+        roles = [r.strip() for r in head.split(",") if r.strip()]
+        task = task.strip()
+    else:
+        task = raw_arg.strip()
+        roles = list(_DEFAULT_CREW)
+
+    if not task or not roles:
+        console.print("[err]usage: /subagent <task>  ·  /subagent role1,role2:<task>[/err]")
+        return
+
+    cwd = Path(session.cwd)
+    parent_ctx, picks, why = _build_context(task, session=session, cwd=cwd, console=console)
+    if picks:
+        _ui.render_skills_picked(console, picks, why)
+
+    specs = [
+        SubAgentSpec(name=role, role=role, task=task)  # type: ignore[arg-type]
+        for role in roles
+    ]
+    console.print(f"[brand]── parallel agents ({len(specs)}) ──[/brand]")
+
+    # Live status table: spinner per role; flips to ✓ / ✗ on completion.
+    statuses: dict[str, str] = {r: "running" for r in roles}
+
+    def _render_table() -> Table:
+        table = Table.grid(padding=(0, 2))
+        table.add_column(style="key")
+        table.add_column()
+        for r in roles:
+            st = statuses[r]
+            if st == "running":
+                table.add_row(Spinner("dots", style="brand"), f"[brand]{r}[/brand]: working…")
+            elif st == "ok":
+                table.add_row("[ok]✓[/ok]", f"[brand]{r}[/brand]: done")
+            else:
+                table.add_row("[err]✗[/err]", f"[brand]{r}[/brand]: error")
+        return table
+
+    results: list[SubAgentResult] = []
+
+    def _on_done(result: SubAgentResult) -> None:
+        statuses[result.name] = "ok" if result.ok else "err"
+
+    with Live(_render_table(), console=console, refresh_per_second=8, transient=False) as live:
+        results = run_subagents_parallel(
+            specs,
+            parent_context=parent_ctx,
+            project_cwd=cwd,
+            parent_provider=session.provider,
+            parent_model=session.model,
+            max_concurrency=min(4, len(specs)),
+            on_done=lambda r: (_on_done(r), live.update(_render_table())),
+        )
+        live.update(_render_table())
+
+    # Per-result panel.
+    for r in results:
+        if r.ok:
+            console.print(
+                f"\n[brand]── {r.name}[/brand] [meta]({r.duration_seconds:.1f}s · "
+                f"{r.usage.total_tokens:,} tok)[/meta]"
+            )
+            if r.plan:
+                _ui.render_plan(console, r.plan, r.tradeoffs, r.verdict)
+            if r.code:
+                _ui.render_code(console, r.code)
+            if r.defense:
+                _ui.render_defense(console, r.defense)
+        else:
+            console.print(f"\n[err]✗ {r.name} failed:[/err] {r.error}")
+
+    # Roll into the session as one turn.
+    total_usage = aggregate_usage(results)
+    turn = TaskTurn(
+        task=f"/subagent {raw_arg}",
+        plan="\n\n".join(f"### {r.name}\n{r.plan}" for r in results if r.plan),
+        tradeoffs="\n\n".join(f"### {r.name}\n{r.tradeoffs}" for r in results if r.tradeoffs),
+        verdict="\n".join(f"{r.name}: {r.verdict}" for r in results if r.verdict),
+        code="\n\n".join(f"# from {r.name}\n{r.code}" for r in results if r.code),
+        defense="\n\n".join(f"### {r.name}\n{r.defense}" for r in results if r.defense),
+        usage=total_usage,
+        cost_usd=sum(
+            estimate_cost_usd(session.provider, session.model, r.usage) for r in results
+        ),
+        skills_used=picks,
+    )
+    session.record(turn)
+    _ui.render_usage_line(
+        console,
+        label="parallel agents",
+        usage_total=turn.usage.total_tokens,
+        cost_usd=turn.cost_usd,
+        budget_usd=session.budget_usd,
+    )
+    _ui.render_footer(console, session)
+
+
+def _maybe_auto_verify(console, session: Session, turn: TaskTurn) -> None:
+    """If the user has `[verify].auto = true` configured AND this turn
+    wrote a file, run the check command and surface PASS/FAIL inline."""
+    if not turn.files_touched:
+        return
+    from ._verify import configured_check, run_check
+
+    cmd, auto = configured_check(session.cwd)
+    if not auto or not cmd:
+        return
+    console.print(f"[meta]auto-verify:[/meta] [key]{cmd}[/key]")
+    with console.status("[brand]verifying…[/brand]"):
+        result = run_check(cmd, cwd=session.cwd)
+    if result.ok:
+        console.print(f"[ok]verify PASS[/ok] [meta](exit {result.exit_code})[/meta]")
+        return
+    from rich.panel import Panel
+
+    console.print(
+        f"[err]verify FAIL[/err] [meta](exit {result.exit_code})[/meta]"
+    )
+    console.print(Panel(result.head, border_style="err", padding=(0, 1)))
+    console.print(
+        "[hint]use /undo to revert the change, or fix forward.[/hint]"
+    )
+
+
 def run_turn(console, session: Session, task: str) -> None:
     """Run one full task end-to-end (the plan-first loop)."""
     cwd = Path(session.cwd)
@@ -395,6 +552,9 @@ def run_turn(console, session: Session, task: str) -> None:
 
     # 4. Apply / save / discard
     _apply_or_save(console, session, turn, g.code)
+
+    # 4.5 Auto-verify if configured.
+    _maybe_auto_verify(console, session, turn)
 
     # 5. Footer
     session.record(turn)

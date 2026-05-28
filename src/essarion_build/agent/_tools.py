@@ -26,7 +26,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from .. import tools as sdk_tools
-from . import _background
+from . import _background, _changes
 
 
 # Resolved per-session by the REPL via `bind_tools(cwd, ...)`. Keeping
@@ -46,6 +46,7 @@ def bind_tools(cwd: str | Path, *, auto_approve: bool = False) -> None:
     _SANDBOX_ROOT = Path(cwd).resolve()
     _AUTO_APPROVE = bool(auto_approve)
     _background.bind_manager(_SANDBOX_ROOT)
+    _changes.bind_changelog(_SANDBOX_ROOT)
 
 
 def _resolve(path: str) -> Path:
@@ -131,62 +132,6 @@ def grep(pattern: str, path: str = ".", max_hits: int = 50) -> str:
     return "\n".join(hits) if hits else "(no matches)"
 
 
-# ---------- side-effect tools ----------
-
-def write_file(path: str, content: str) -> str:
-    """Write `content` to `path` (relative to sandbox). Creates parent dirs."""
-    p = _resolve(path)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(content, encoding="utf-8")
-    return f"wrote {len(content):,} bytes to {path}"
-
-
-def apply_diff(path: str, old: str, new: str) -> str:
-    """Replace the *unique* occurrence of `old` with `new` in `path`.
-
-    Refuses if `old` doesn't appear or appears more than once — this is
-    the same safety the SDK's Edit tool surface uses.
-    """
-    p = _resolve(path)
-    if not p.is_file():
-        raise FileNotFoundError(f"not a file: {path}")
-    body = p.read_text(encoding="utf-8")
-    count = body.count(old)
-    if count == 0:
-        raise ValueError(f"old text not found in {path}")
-    if count > 1:
-        raise ValueError(
-            f"old text appears {count} times in {path}; tighten the snippet"
-        )
-    p.write_text(body.replace(old, new), encoding="utf-8")
-    return f"applied 1-occurrence patch to {path}"
-
-
-def run_shell(cmd: str, timeout: int = 30) -> str:
-    """Run a shell command in the sandbox root. Captures stdout+stderr."""
-    parts = shlex.split(cmd)
-    try:
-        result = subprocess.run(
-            parts,
-            cwd=_SANDBOX_ROOT,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            check=False,
-        )
-    except subprocess.TimeoutExpired:
-        return f"(timed out after {timeout}s)"
-    except FileNotFoundError as e:
-        return f"(command not found: {e})"
-    out = (result.stdout or "") + (
-        f"\n(stderr)\n{result.stderr}" if result.stderr else ""
-    )
-    out += f"\n[exit {result.returncode}]"
-    if len(out) > 8000:
-        out = out[:8000] + "\n... (truncated)"
-    return out
-
-
 # ---------- discovery tools ----------
 
 # Directory names we never recurse into for find/glob.
@@ -235,9 +180,19 @@ def glob(pattern: str, max_hits: int = 200) -> str:
 # ---------- side-effect tools ----------
 
 def write_file(path: str, content: str) -> str:
-    """Write `content` to `path` (relative to sandbox). Creates parent dirs."""
+    """Write `content` to `path` (relative to sandbox). Creates parent dirs.
+
+    Records the prior content in the session change log so the user can
+    `/undo` to revert and `/diff` to inspect.
+    """
     p = _resolve(path)
     p.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        _changes.current_changelog().record(
+            path, after=content, sandbox_root=_SANDBOX_ROOT
+        )
+    except Exception:  # noqa: BLE001 - changelog must never block a write
+        pass
     p.write_text(content, encoding="utf-8")
     return f"wrote {len(content):,} bytes to {path}"
 
@@ -246,7 +201,8 @@ def apply_diff(path: str, old: str, new: str) -> str:
     """Replace the *unique* occurrence of `old` with `new` in `path`.
 
     Refuses if `old` doesn't appear or appears more than once — this is
-    the same safety the SDK's Edit tool surface uses.
+    the same safety the SDK's Edit tool surface uses. The full new file
+    is recorded in the change log for `/undo`.
     """
     p = _resolve(path)
     if not p.is_file():
@@ -259,7 +215,14 @@ def apply_diff(path: str, old: str, new: str) -> str:
         raise ValueError(
             f"old text appears {count} times in {path}; tighten the snippet"
         )
-    p.write_text(body.replace(old, new), encoding="utf-8")
+    new_body = body.replace(old, new)
+    try:
+        _changes.current_changelog().record(
+            path, after=new_body, sandbox_root=_SANDBOX_ROOT
+        )
+    except Exception:  # noqa: BLE001
+        pass
+    p.write_text(new_body, encoding="utf-8")
     return f"applied 1-occurrence patch to {path}"
 
 

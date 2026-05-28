@@ -7,13 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.4.1] - 2026-05-28
+## [0.3.0] - 2026-05-28
 
-The "project folders and background tasks" follow-up. Same SDK
-underneath; the agent gains project awareness and a parallel-task
-runtime.
+The big "SDK + CLI coding agent" release. v0.2 was a focused
+`reason()`/`generate()` primitive; v0.3 turns essarion-build into a
+full toolkit AND ships a `essarion` CLI coding agent on top — all via
+`pip install essarion-build`.
 
-### Added — project folders
+### Added — agent: project folders
 - `essarion init [<path>]` creates `<path>/.essarion/` with starter
   `config.toml`, per-project `sessions/` directory, and a `.gitignore`
   that ignores stored sessions.
@@ -70,13 +71,6 @@ runtime.
 - Suite grew from 284 to 318 cases. New files:
   `test_agent_project.py`, `test_agent_background.py`,
   `test_agent_tools_discovery.py`.
-
-## [0.4.0] - 2026-05-28
-
-The "essarion CLI coding agent" release. v0.3 made `essarion-build` a
-serious SDK; v0.4 turns it into a fully-featured CLI coding agent
-without losing any of the SDK surface. Everything is `pip install
-essarion-build`.
 
 ### Added — `essarion` CLI coding agent
 
@@ -151,13 +145,7 @@ The `essarion-build` console script is preserved unchanged.
   `test_agent_tools.py`, `test_agent_session.py`, `test_agent_loop.py`,
   `test_agent_commands.py`, `test_agent_main.py`.
 
-## [0.3.0] - 2026-05-28
-
-The big-SDK release. v0.2 was a focused `reason()`/`generate()` primitive;
-v0.3 turns it into a full toolkit for AI-assisted coding — six providers,
-async, streaming, batching, conversations, workflows, a CLI, custom skills,
-and 16 new bundled skills. 100% backwards-compatible at the public API
-surface; existing v0.2 code keeps working.
+### Added — SDK expansion (foundation for the agent)
 
 ### Added — providers
 - **OpenAI** (`provider="openai"`) — direct, no OpenRouter hop. Reads `OPENAI_API_KEY`.
@@ -327,8 +315,6 @@ surface; existing v0.2 code keeps working.
 ### Tests
 - Suite grew from 26 to 42 cases. Added coverage for tag repair (happy path, failed repair, no-repair-needed), usage arithmetic and aggregation, per-call `max_tokens` override, and HTTP error mapping / retry behavior via `httpx.MockTransport`.
 
-[Unreleased]: https://github.com/hapi-developer/essarion_build/compare/v0.4.1...HEAD
-[0.4.1]: https://github.com/hapi-developer/essarion_build/releases/tag/v0.4.1
-[0.4.0]: https://github.com/hapi-developer/essarion_build/releases/tag/v0.4.0
+[Unreleased]: https://github.com/hapi-developer/essarion_build/compare/v0.3.0...HEAD
 [0.3.0]: https://github.com/hapi-developer/essarion_build/releases/tag/v0.3.0
 [0.2.0]: https://github.com/hapi-developer/essarion_build/releases/tag/v0.2.0

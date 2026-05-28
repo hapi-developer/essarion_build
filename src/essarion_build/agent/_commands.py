@@ -235,6 +235,224 @@ def _cmd_version(console: Console, session: Session, args: str) -> CommandResult
     return "continue"
 
 
+def _cmd_remember(console: Console, session: Session, args: str) -> CommandResult:
+    from ._memory import load_memory
+
+    memory = load_memory(session.cwd)
+    arg = args.strip()
+    if not arg:
+        # Print current memory.
+        if not memory.facts:
+            console.print("[meta](no remembered facts)[/meta]")
+            console.print(f"[hint]usage: /remember <fact>  ·  file: {memory.path}[/hint]")
+            return "continue"
+        from rich.panel import Panel
+
+        body = "\n".join(f"- {f}" for f in memory.facts)
+        console.print(
+            Panel(body, title="[brand]project memory[/brand]", border_style="brand", padding=(0, 1))
+        )
+        console.print(f"[hint]{memory.path}[/hint]")
+        return "continue"
+    try:
+        memory.add_fact(arg)
+    except ValueError as e:
+        console.print(f"[err]{e}[/err]")
+        return "continue"
+    memory.save()
+    console.print(f"[ok]remembered[/ok] [meta]({len(memory.facts)} fact(s) total)[/meta]")
+    return "continue"
+
+
+def _cmd_forget(console: Console, session: Session, args: str) -> CommandResult:
+    from ._memory import load_memory
+
+    memory = load_memory(session.cwd)
+    arg = args.strip()
+    if not arg:
+        console.print("[err]usage: /forget <pattern>  ·  /forget all[/err]")
+        return "continue"
+    if arg.lower() == "all":
+        n = len(memory.facts)
+        memory.clear()
+        memory.save()
+        console.print(f"[ok]forgot all {n} fact(s)[/ok]")
+        return "continue"
+    removed = memory.forget(arg)
+    memory.save()
+    if removed:
+        console.print(f"[ok]removed {removed} fact(s) matching {arg!r}[/ok]")
+    else:
+        console.print(f"[meta]no facts matched {arg!r}[/meta]")
+    return "continue"
+
+
+def _cmd_verify(console: Console, session: Session, args: str) -> CommandResult:
+    from ._verify import configured_check, run_check
+
+    cmd, _auto = configured_check(session.cwd)
+    target = args.strip() or cmd
+    if not target:
+        console.print(
+            "[err]no verify command — set [verify].check_cmd in "
+            ".essarion/config.toml or pass one: /verify pytest -q[/err]"
+        )
+        return "continue"
+    console.print(f"[meta]running:[/meta] [key]{target}[/key]")
+    with console.status("[brand]verifying…[/brand]"):
+        result = run_check(target, cwd=session.cwd)
+    style = "ok" if result.ok else "err"
+    console.print(
+        f"[{style}]{'PASS' if result.ok else 'FAIL'}[/{style}] "
+        f"[meta]exit={result.exit_code}[/meta]"
+    )
+    if result.head.strip():
+        from rich.panel import Panel
+
+        console.print(Panel(result.head, border_style=style, padding=(0, 1)))
+    return "continue"
+
+
+def _cmd_diff(console: Console, session: Session, args: str) -> CommandResult:
+    """Show every file change the agent made this session."""
+    from ._changes import current_changelog
+    from ._ui import render_diff
+
+    log = current_changelog()
+    body = log.diff()
+    if not body.strip():
+        console.print("[meta](no changes this session)[/meta]")
+        return "continue"
+    render_diff(console, body)
+    console.print(
+        f"[meta]files touched: {', '.join(log.files_touched()) or '(none)'}[/meta]"
+    )
+    return "continue"
+
+
+def _cmd_undo(console: Console, session: Session, args: str) -> CommandResult:
+    """Revert the most recent agent-applied change."""
+    from pathlib import Path
+
+    from ._changes import current_changelog
+
+    log = current_changelog()
+    entry = log.undo_last(sandbox_root=Path(session.cwd))
+    if entry is None:
+        console.print("[meta](nothing to undo)[/meta]")
+        return "continue"
+    kind_lbl = {"create": "deleted", "modify": "restored", "delete": "restored"}.get(
+        entry.kind, "reverted"
+    )
+    console.print(f"[ok]{kind_lbl}[/ok] [brand]{entry.path}[/brand]")
+    return "continue"
+
+
+def _cmd_commit(console: Console, session: Session, args: str) -> CommandResult:
+    """Create a git commit of the session's changes."""
+    import shutil
+    import subprocess
+    from pathlib import Path
+
+    from ._changes import current_changelog
+
+    log = current_changelog()
+    if not log.entries:
+        console.print("[meta](no changes to commit)[/meta]")
+        return "continue"
+    if shutil.which("git") is None:
+        console.print("[err]git not on PATH[/err]")
+        return "continue"
+    cwd = Path(session.cwd)
+    if not (cwd / ".git").exists():
+        # Walk up looking for .git
+        for parent in cwd.parents:
+            if (parent / ".git").exists():
+                break
+        else:
+            console.print(f"[err]no git repo at or above {cwd}[/err]")
+            return "continue"
+    message = args.strip() or f"essarion: {len(log.entries)} change(s) in session {session.id}"
+    files = log.files_touched()
+    try:
+        subprocess.run(
+            ["git", "add", "--"] + files, cwd=str(cwd), check=True, capture_output=True
+        )
+        result = subprocess.run(
+            ["git", "commit", "-m", message],
+            cwd=str(cwd), check=False, capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            console.print(f"[err]git commit failed:[/err]\n{result.stderr.strip()}")
+            return "continue"
+        sha = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=str(cwd), check=True, capture_output=True, text=True,
+        ).stdout.strip()
+        console.print(f"[ok]committed[/ok] [brand]{sha}[/brand] [meta]{message}[/meta]")
+    except subprocess.CalledProcessError as e:
+        console.print(f"[err]git error: {e}[/err]")
+    return "continue"
+
+
+def _cmd_ask(console: Console, session: Session, args: str) -> CommandResult:
+    """Quick Q&A: runs reason() only (no draft), prints the plan inline."""
+    from ._loop import _build_context, _run_plan_phase
+    from ._session import TaskTurn
+    from pathlib import Path
+
+    task = args.strip()
+    if not task:
+        console.print("[err]usage: /ask <question>[/err]")
+        return "continue"
+    ctx, picks, why = _build_context(
+        task, session=session, cwd=Path(session.cwd), console=console
+    )
+    if picks:
+        from ._ui import render_skills_picked
+
+        render_skills_picked(console, picks, why)
+    turn = TaskTurn(task=task, skills_used=picks)
+    r = _run_plan_phase(console, session, ctx, task, turn)
+    if r is not None:
+        turn.plan = r.plan
+        turn.tradeoffs = r.tradeoffs
+        turn.verdict = r.verdict
+    session.record(turn)
+    from ._ui import render_footer
+
+    render_footer(console, session)
+    return "continue"
+
+
+def _workflow_command(workflow_key: str):
+    """Build a slash command that routes to one of the SDK workflows."""
+
+    def _cmd(console: Console, session: Session, args: str) -> CommandResult:
+        from ._loop import run_turn
+
+        target = args.strip()
+        if not target:
+            console.print(f"[err]usage: /{workflow_key} <target>[/err]")
+            return "continue"
+        # Map slash name to the workflow prefix the loop already recognizes.
+        prefix = {
+            "review": "review",
+            "fix": "fix-bug",
+            "tests": "tests",
+            "refactor": "refactor",
+            "docs": "docs",
+            "security": "security-review",
+            "perf": "perf-review",
+            "explain": "explain",
+            "pr": "pr-description",
+        }[workflow_key]
+        run_turn(console, session, f"{prefix}: {target}")
+        return "continue"
+
+    return _cmd
+
+
 def _cmd_bg(console: Console, session: Session, args: str) -> CommandResult:
     """Background task management.
 
@@ -272,7 +490,6 @@ def _cmd_bg(console: Console, session: Session, args: str) -> CommandResult:
 
             console.print(Panel(body, border_style="meta", padding=(0, 1)))
 
-    # No args → list
     if not arg:
         tasks = mgr.poll_all()
         if not tasks:
@@ -298,7 +515,6 @@ def _cmd_bg(console: Console, session: Session, args: str) -> CommandResult:
         console.print(table)
         return "continue"
 
-    # Subcommands
     parts = arg.split(maxsplit=1)
     head = parts[0]
     rest = parts[1] if len(parts) > 1 else ""
@@ -343,7 +559,6 @@ def _cmd_bg(console: Console, session: Session, args: str) -> CommandResult:
         console.print(f"[ok]killed [{task.id}] (exit {task.exit_code})[/ok]")
         return "continue"
 
-    # `/bg run <cmd>`, `/bg detached <cmd>`, or `/bg <cmd>` (treat whole arg as cmd)
     detached = False
     if head == "detached":
         detached = True
@@ -369,6 +584,30 @@ def _cmd_bg(console: Console, session: Session, args: str) -> CommandResult:
     return "continue"
 
 
+def _cmd_subagent(console: Console, session: Session, args: str) -> CommandResult:
+    """Spawn focused subagents in parallel for the task.
+
+    Usage:
+      /subagent <task>                 spawn the default crew (researcher,
+                                       implementer, test_writer) and synthesize
+      /subagent <role1,role2>:<task>   spawn specific roles in parallel
+    """
+    arg = args.strip()
+    if not arg:
+        console.print(
+            "[err]usage: /subagent <task>  ·  /subagent role1,role2:<task>[/err]"
+        )
+        console.print(
+            "[hint]roles: researcher implementer test_writer verifier reviewer refactorer[/hint]"
+        )
+        return "continue"
+
+    from ._loop import _dispatch_subagents
+
+    _dispatch_subagents(console, session, arg)
+    return "continue"
+
+
 # Public dispatch table: name → (function, description).
 COMMANDS: dict[str, tuple[Callable, str]] = {
     "/help": (_cmd_help, "show this list"),
@@ -386,8 +625,62 @@ COMMANDS: dict[str, tuple[Callable, str]] = {
     "/export": (_cmd_export, "dump session JSON to stdout"),
     "/yolo": (_cmd_yolo, "toggle auto-approval of side-effect tools"),
     "/bg": (_cmd_bg, "background tasks: run / list / show / wait / kill / clear"),
+    "/remember": (_cmd_remember, "show or add a fact to project memory"),
+    "/forget": (_cmd_forget, "remove fact(s) from project memory"),
+    "/verify": (_cmd_verify, "run the project's check command (tests/lint)"),
+    "/diff": (_cmd_diff, "show every change made this session"),
+    "/undo": (_cmd_undo, "revert the most recent agent-applied change"),
+    "/commit": (_cmd_commit, "git-commit the session's changes"),
+    "/ask": (_cmd_ask, "quick reason() only, no draft phase"),
+    "/subagent": (_cmd_subagent, "spawn parallel focused subagents (research/impl/tests/…)"),
+    "/review": (_workflow_command("review"), "shortcut: workflows.review(<target>)"),
+    "/fix": (_workflow_command("fix"), "shortcut: workflows.fix_bug(<target>)"),
+    "/tests": (_workflow_command("tests"), "shortcut: workflows.write_tests(<target>)"),
+    "/refactor": (_workflow_command("refactor"), "shortcut: workflows.refactor(<target>)"),
+    "/docs": (_workflow_command("docs"), "shortcut: workflows.docs(<target>)"),
+    "/security": (_workflow_command("security"), "shortcut: workflows.security_review(<target>)"),
+    "/perf": (_workflow_command("perf"), "shortcut: workflows.performance_review(<target>)"),
+    "/explain": (_workflow_command("explain"), "shortcut: workflows.explain_code(<target>)"),
+    "/pr": (_workflow_command("pr"), "shortcut: workflows.write_pr_description(<target>)"),
     "/version": (_cmd_version, "show the SDK version"),
 }
+
+
+
+def _try_custom_command(
+    console: Console, session: Session, cmd: str, args: str
+) -> CommandResult | None:
+    """Look for a user-defined command in `<project>/.essarion/commands/`.
+
+    Each file `<name>.md` becomes the slash command `/<name>`. The body
+    is treated as a task template; the user's args after the slash
+    command are substituted in for `{args}`.
+    """
+    from pathlib import Path
+
+    from ._project import find_project_root
+    from ._loop import run_turn
+
+    name = cmd.lstrip("/")
+    if not name:
+        return None
+    project = find_project_root(session.cwd)
+    candidates = []
+    if project.has_essarion_dir:
+        candidates.append(project.essarion_dir / "commands" / f"{name}.md")
+    candidates.append(Path.home() / ".essarion" / "commands" / f"{name}.md")
+    for path in candidates:
+        if path.is_file():
+            template = path.read_text(encoding="utf-8")
+            task = template.replace("{args}", args).strip()
+            if not task:
+                console.print(
+                    f"[err]custom command {cmd} produced an empty task[/err]"
+                )
+                return "continue"
+            run_turn(console, session, task)
+            return "continue"
+    return None
 
 
 def dispatch(console: Console, session: Session, line: str) -> CommandResult | None:
@@ -398,10 +691,14 @@ def dispatch(console: Console, session: Session, line: str) -> CommandResult | N
     cmd = parts[0]
     args = parts[1] if len(parts) > 1 else ""
     entry = COMMANDS.get(cmd)
-    if entry is None:
-        console.print(
-            f"[err]unknown command {cmd}[/err]  [hint]/help to list them[/hint]"
-        )
-        return "continue"
-    fn, _ = entry
-    return fn(console, session, args)
+    if entry is not None:
+        fn, _ = entry
+        return fn(console, session, args)
+    # User-defined slash command from .essarion/commands/<name>.md ?
+    custom = _try_custom_command(console, session, cmd, args)
+    if custom is not None:
+        return custom
+    console.print(
+        f"[err]unknown command {cmd}[/err]  [hint]/help to list them[/hint]"
+    )
+    return "continue"
