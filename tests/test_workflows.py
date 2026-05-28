@@ -119,3 +119,41 @@ def test_review_with_existing_context_does_not_duplicate_skills(monkeypatch) -> 
     names = [s.name for s in ctx.builtin_skills]
     # code_review must appear once (not duplicated) plus the other defaults.
     assert names.count("code_review") == 1
+
+
+def test_security_review_workflow(monkeypatch) -> None:
+    stub = _make_stub_review()
+    rt = LiteRuntime(stub)
+    _patch_reason(monkeypatch, rt)
+    r = workflows.security_review("src/auth.py")
+    assert "do not ship" in r.verdict
+    assert "auth_security" in stub.calls[0]["system"]
+    assert "secure_coding" in stub.calls[0]["system"]
+
+
+def test_performance_review_workflow(monkeypatch) -> None:
+    stub = _make_stub_review()
+    rt = LiteRuntime(stub)
+    _patch_reason(monkeypatch, rt)
+    r = workflows.performance_review("src/slow_path.py")
+    assert "performance" in stub.calls[0]["system"]
+    assert "caching" in stub.calls[0]["system"]
+
+
+def test_write_pr_description_workflow(monkeypatch) -> None:
+    stub = _make_stub_generate()
+    rt = LiteRuntime(stub)
+    _patch_generate(monkeypatch, rt)
+    g = workflows.write_pr_description("the auth refactor", diff="--- a\n+++ b\n+new")
+    assert "def x" in g.code
+    assert "documentation" in stub.calls[0]["system"]
+    assert "+new" in stub.calls[0]["system"]
+
+
+def test_explain_code_workflow(monkeypatch) -> None:
+    stub = _make_stub_review()
+    rt = LiteRuntime(stub)
+    _patch_reason(monkeypatch, rt)
+    r = workflows.explain_code("the LiteRuntime class")
+    assert r.plan  # got back a plan
+    assert "documentation" in stub.calls[0]["system"]

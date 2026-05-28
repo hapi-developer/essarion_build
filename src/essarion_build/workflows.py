@@ -182,4 +182,137 @@ def docs(
     )
 
 
-__all__ = ["review", "fix_bug", "write_tests", "refactor", "docs"]
+DEFAULT_SECURITY_SKILLS = [
+    "secure_coding",
+    "auth_security",
+    "code_review",
+    "error_handling",
+    "scope_discipline",
+]
+
+DEFAULT_PERFORMANCE_SKILLS = [
+    "performance",
+    "concurrency",
+    "caching",
+    "observability",
+    "code_review",
+]
+
+DEFAULT_PR_DESCRIPTION_SKILLS = [
+    "documentation",
+    "code_review",
+    "scope_discipline",
+    "git_workflow",
+]
+
+
+def security_review(
+    target: str,
+    *,
+    context: Context | None = None,
+    repo: str | Path | None = None,
+    diff: str | None = None,
+    **kwargs,
+) -> Reasoning:
+    """Security-focused review. Returns a `Reasoning` whose plan reads like a
+    threat-modeling pass: assets, attack surface, findings (with CWE refs
+    where applicable), suggested fix."""
+    ctx = _ensure_context(
+        context, repo=repo, diff=diff, skills=DEFAULT_SECURITY_SKILLS
+    )
+    return reason(
+        "Perform a security review of the following target. Your plan should "
+        "(1) identify the assets being protected, (2) enumerate the attack "
+        "surface visible in the context, (3) list specific findings (each "
+        "with a severity, a CWE/OWASP reference where it applies, and a "
+        f"concrete fix). Target: {target}",
+        context=ctx,
+        **kwargs,
+    )
+
+
+def performance_review(
+    target: str,
+    *,
+    context: Context | None = None,
+    repo: str | Path | None = None,
+    diff: str | None = None,
+    **kwargs,
+) -> Reasoning:
+    """Performance-focused review. Returns a `Reasoning` whose plan reads
+    like a hot-path analysis: complexity, allocation, blocking I/O, cache
+    misses, suggested optimization (with expected payoff)."""
+    ctx = _ensure_context(
+        context, repo=repo, diff=diff, skills=DEFAULT_PERFORMANCE_SKILLS
+    )
+    return reason(
+        "Perform a performance review of the following target. Your plan "
+        "should: (1) identify the hot path(s) in the context, (2) enumerate "
+        "complexity / allocation / blocking-I/O / cache-miss issues you see, "
+        "(3) suggest specific optimizations with estimated payoff and "
+        f"complexity cost. Target: {target}",
+        context=ctx,
+        **kwargs,
+    )
+
+
+def write_pr_description(
+    target: str,
+    *,
+    context: Context | None = None,
+    repo: str | Path | None = None,
+    diff: str | None = None,
+    **kwargs,
+) -> Generation:
+    """Generate a PR description from a diff + context. Returns a
+    `Generation` whose code field is the markdown body."""
+    ctx = _ensure_context(
+        context, repo=repo, diff=diff, skills=DEFAULT_PR_DESCRIPTION_SKILLS
+    )
+    return generate(
+        "Write a pull-request description for the following change. The "
+        "description must have: a one-line summary at the top, a 'Why' "
+        "paragraph explaining the motivation, a 'What changes' bulleted "
+        "list grounded in the diff, a 'Test plan' bulleted list, and a "
+        "'Risk' line calling out anything reviewers should look at. Keep "
+        "it short — readers scan PR descriptions, they do not read them. "
+        f"Output the markdown body. Target: {target}",
+        context=ctx,
+        **kwargs,
+    )
+
+
+def explain_code(
+    target: str,
+    *,
+    context: Context | None = None,
+    repo: str | Path | None = None,
+    **kwargs,
+) -> Reasoning:
+    """Explain how a piece of code works. Returns a `Reasoning` whose plan
+    is a layered explanation: 1-line summary, 5-line summary, full walkthrough."""
+    ctx = _ensure_context(
+        context, repo=repo, diff=None, skills=["documentation", "scope_discipline"]
+    )
+    return reason(
+        "Explain the following code to a new engineer joining the team. "
+        "Plan as three layers: (1) one sentence — what it does, (2) five "
+        "sentences — the algorithm at a glance, (3) the full walkthrough "
+        "with file:line citations to the context. Cite specific lines; do "
+        f"not paraphrase what the reader can see. Target: {target}",
+        context=ctx,
+        **kwargs,
+    )
+
+
+__all__ = [
+    "review",
+    "fix_bug",
+    "write_tests",
+    "refactor",
+    "docs",
+    "security_review",
+    "performance_review",
+    "write_pr_description",
+    "explain_code",
+]

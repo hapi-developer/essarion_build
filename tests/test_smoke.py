@@ -104,6 +104,11 @@ EXPECTED_SKILLS = {
     "incident_response",
     "dx",
     "migrations",
+    "dependency_injection",
+    "cloud_infra",
+    "kubernetes",
+    "code_style",
+    "code_smells",
 }
 
 

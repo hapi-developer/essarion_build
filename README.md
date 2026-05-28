@@ -48,7 +48,7 @@ from essarion_build import Context, reason, generate
 
 ctx = (
     Context()
-      .with_all_skills()                 # 37 bundled coding-practice skills
+      .with_all_skills()                 # 42 bundled coding-practice skills
       .add_repo("./")                    # ground in your codebase
       .add_docs("https://datatracker.ietf.org/doc/html/rfc7519")
 )
@@ -78,10 +78,11 @@ from essarion_build import Context, list_skills, load_skill
 list_skills()
 # [
 #   'accessibility', 'api_design', 'auth_security', 'caching', 'cli_design',
-#   'code_review', 'concurrency', 'data_modeling', 'database_design',
-#   'debugging', 'dependency_management', 'documentation', 'dx',
-#   'error_handling', 'event_driven', 'feature_flags', 'git_workflow',
-#   'go_idioms', 'incident_response', 'internationalization',
+#   'cloud_infra', 'code_review', 'code_smells', 'code_style', 'concurrency',
+#   'data_modeling', 'database_design', 'debugging', 'dependency_injection',
+#   'dependency_management', 'documentation', 'dx', 'error_handling',
+#   'event_driven', 'feature_flags', 'git_workflow', 'go_idioms',
+#   'incident_response', 'internationalization', 'kubernetes',
 #   'llm_integration', 'logging', 'microservices', 'migrations',
 #   'observability', 'performance', 'python_idioms', 'react_patterns',
 #   'refactoring', 'release_engineering', 'rust_idioms', 'scope_discipline',

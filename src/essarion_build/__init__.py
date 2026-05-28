@@ -15,7 +15,7 @@ outputs. v0.3 ships:
 - CLI: `essarion-build`
 """
 
-from . import auth
+from . import auth, evals
 from ._async_api import agenerate, areason
 from ._batch import BatchResult, batch_generate, batch_reason, run_batch
 from ._async_providers import (
@@ -154,5 +154,6 @@ __all__ = [
     "ContextError",
     "ReasoningFormatError",
     "auth",
+    "evals",
     "__version__",
 ]
