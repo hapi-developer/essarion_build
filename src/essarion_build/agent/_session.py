@@ -78,6 +78,7 @@ class Session(BaseModel):
     provider: str
     model: str
     escalate_model: str | None = None  # set on /escalate or auto-pick
+    stream: bool = False  # True → stream draft tokens to the console
     max_tokens: int = 4096
     budget_usd: float = 1.00
     skills_mode: str = "auto"  # "auto" | "all" | "none"

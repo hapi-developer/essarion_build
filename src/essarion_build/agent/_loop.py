@@ -29,6 +29,7 @@ from .. import (
     build_provider,
     generate,
     reason,
+    stream_generate,
 )
 from .. import workflows
 from .._context import RepoFile
@@ -45,20 +46,27 @@ from ._commands import dispatch as dispatch_command
 # Regex that finds path-shaped tokens in a user message. Used by the
 # auto-attach step to load files the user clearly wants the agent to see.
 _PATH_RE = re.compile(r"(?:\b|^)([\w/._-]+\.(?:py|ts|tsx|js|jsx|md|sql|toml|yml|yaml|json|rs|go|java|kt|rb|sh))(?:\b|$)")
+# Directory references — words that look like "src/auth/" or "tests/".
+_DIR_RE = re.compile(r"(?:\b|^)((?:[\w._-]+/)+)(?:\b|$|\s)")
+# How many files to auto-attach from a referenced directory.
+_DIR_AUTOLOAD_MAX = 8
 
 
 def _autoload_files(task: str, cwd: Path, ctx: Context, console) -> list[str]:
-    """If the user names any files in their task, load them into the context.
+    """If the user names any files or directories in their task, load them
+    into the context.
 
-    This is the small-but-magic auto-grounding feature: typing
-    "review src/auth.py for races" auto-attaches src/auth.py — no manual
-    --repo or `read_file` tool call.
+    Files mentioned by name (`src/auth.py`) attach individually.
+    Directories mentioned (`src/auth/`) attach up to `_DIR_AUTOLOAD_MAX`
+    files from inside.
     """
     loaded: list[str] = []
+    seen_paths: set[str] = set()
+
     for match in _PATH_RE.finditer(task):
         rel = match.group(1)
         path = cwd / rel
-        if not path.is_file():
+        if not path.is_file() or rel in seen_paths:
             continue
         try:
             content = path.read_text(encoding="utf-8")
@@ -68,9 +76,44 @@ def _autoload_files(task: str, cwd: Path, ctx: Context, console) -> list[str]:
             content = content[:200_000] + "\n... (truncated)"
         ctx.repo_files.append(RepoFile(path=rel, content=content))
         loaded.append(rel)
+        seen_paths.add(rel)
+
+    # Directory references — attach the first N files inside, skipping VCS/build dirs.
+    skip_parts = {".git", "__pycache__", "node_modules", ".venv", "venv", "dist", "build"}
+    for match in _DIR_RE.finditer(task):
+        rel = match.group(1).rstrip("/")
+        d = cwd / rel
+        if not d.is_dir():
+            continue
+        count_for_dir = 0
+        for p in sorted(d.rglob("*")):
+            if not p.is_file():
+                continue
+            if any(part in skip_parts for part in p.parts):
+                continue
+            try:
+                rel_p = p.relative_to(cwd).as_posix()
+            except ValueError:
+                continue
+            if rel_p in seen_paths:
+                continue
+            try:
+                content = p.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+            if len(content) > 100_000:
+                content = content[:100_000] + "\n... (truncated)"
+            ctx.repo_files.append(RepoFile(path=rel_p, content=content))
+            loaded.append(rel_p)
+            seen_paths.add(rel_p)
+            count_for_dir += 1
+            if count_for_dir >= _DIR_AUTOLOAD_MAX:
+                break
+
     if loaded:
         console.print(
-            f"[meta]auto-loaded:[/meta] " + " ".join(f"[skill]{p}[/skill]" for p in loaded)
+            f"[meta]auto-loaded:[/meta] " + " ".join(f"[skill]{p}[/skill]" for p in loaded[:12])
+            + (f" [meta](+ {len(loaded) - 12} more)[/meta]" if len(loaded) > 12 else "")
         )
     return loaded
 
@@ -114,9 +157,23 @@ def _build_context(
 
 
 def _make_runtime(provider: str, model: str) -> LiteRuntime:
-    """Build a fresh runtime each turn so the agent picks up /model swaps."""
-    prov = build_provider(name=provider, api_key=None, model=model)
+    """Build a fresh runtime each turn so the agent picks up /model swaps.
+
+    Wraps the underlying builder so a missing API key becomes a typed,
+    actionable error instead of a generic RuntimeError.
+    """
+    try:
+        prov = build_provider(name=provider, api_key=None, model=model)
+    except RuntimeError as e:
+        # The SDK raises RuntimeError("OPENROUTER_API_KEY is not set ...")
+        # — wrap so the agent path can surface a friendlier message.
+        raise _MissingKeyError(str(e)) from e
     return LiteRuntime(prov)
+
+
+class _MissingKeyError(RuntimeError):
+    """Distinguishable from a network/HTTP RuntimeError. Caught and rendered
+    by the phase runners with an actionable hint."""
 
 
 def _looks_like_reject(verdict: str) -> bool:
@@ -141,6 +198,14 @@ def _run_plan_phase(
                 _runtime=_make_runtime(session.provider, session.model),
                 max_tokens=session.max_tokens,
             )
+        except _MissingKeyError as e:
+            console.print(f"[err]plan failed: missing API key[/err]")
+            console.print(f"[hint]{e}[/hint]")
+            console.print(
+                "[hint]export the key in your shell, or switch model with "
+                "`/model <provider>/<model>` (try `/model ollama/llama3.2` for local).[/hint]"
+            )
+            return None
         except Exception as e:  # noqa: BLE001
             console.print(f"[err]plan failed: {type(e).__name__}: {e}[/err]")
             return None
@@ -152,22 +217,79 @@ def _run_plan_phase(
 def _run_draft_phase(
     console, session: Session, ctx: Context, task: str, turn: TaskTurn
 ):
-    """Run generate(); if selfcheck rejects AND escalate is set, re-run with escalate."""
+    """Run generate(); if selfcheck rejects AND escalate is set, re-run with escalate.
+
+    Streams the draft phase token-by-token (when stream=True on the session)
+    so the user sees code as it's written.
+    """
     _ui.render_phase_header(console, "draft")
-    with console.status(
-        "[brand]drafting…[/brand] [hint](draft → selfcheck)[/hint]",
-        spinner="dots",
-    ):
+    streamed = False
+    if getattr(session, "stream", False):
+        # Stream via the SDK's stream_generate; collect into a final Generation.
+        from .. import Generation, Reasoning
+
         try:
-            g = generate(
+            plan_text = tradeoffs_text = verdict_text = code_text = defense_text = ""
+            usage = Usage()
+            console.print("[hint]streaming…[/hint]")
+            for ev in stream_generate(
                 task,
                 context=ctx,
-                _runtime=_make_runtime(session.provider, session.model),
+                provider=session.provider,
+                model=session.model,
                 max_tokens=session.max_tokens,
+            ):
+                if ev.kind == "token" and ev.phase == "draft":
+                    # Show the draft tokens as they arrive — that's the
+                    # whole point of streaming for the agent's UX.
+                    console.print(ev.text, end="", style="phase.draft")
+                if ev.kind == "phase_end":
+                    if ev.phase == "plan":
+                        plan_text = ev.tags.get("plan", plan_text)
+                        tradeoffs_text = ev.tags.get("tradeoffs", tradeoffs_text)
+                        verdict_text = ev.tags.get("verdict", verdict_text)
+                    elif ev.phase == "draft":
+                        code_text = ev.tags.get("code", code_text)
+                        console.print()  # newline after the code stream
+                    elif ev.phase == "selfcheck":
+                        verdict_text = ev.tags.get("verdict", verdict_text)
+                        defense_text = ev.tags.get("defense", defense_text)
+                if ev.kind == "usage":
+                    usage = usage + ev.usage
+            g = Generation(
+                code=code_text,
+                reasoning=Reasoning(
+                    plan=plan_text,
+                    tradeoffs=tradeoffs_text,
+                    verdict=verdict_text,
+                    usage=usage,
+                ),
+                defense=defense_text,
+                usage=usage,
             )
+            streamed = True
         except Exception as e:  # noqa: BLE001
-            console.print(f"[err]draft failed: {type(e).__name__}: {e}[/err]")
+            console.print(f"[err]draft (streamed) failed: {type(e).__name__}: {e}[/err]")
             return None
+    else:
+        with console.status(
+            "[brand]drafting…[/brand] [hint](draft → selfcheck)[/hint]",
+            spinner="dots",
+        ):
+            try:
+                g = generate(
+                    task,
+                    context=ctx,
+                    _runtime=_make_runtime(session.provider, session.model),
+                    max_tokens=session.max_tokens,
+                )
+            except _MissingKeyError as e:
+                console.print(f"[err]draft failed: missing API key[/err]")
+                console.print(f"[hint]{e}[/hint]")
+                return None
+            except Exception as e:  # noqa: BLE001
+                console.print(f"[err]draft failed: {type(e).__name__}: {e}[/err]")
+                return None
     _record_phase_usage(turn, session, g.usage)
 
     if _looks_like_reject(g.reasoning.verdict) and session.escalate_model:
@@ -359,10 +481,24 @@ def _maybe_auto_verify(console, session: Session, turn: TaskTurn) -> None:
 
 def run_turn(console, session: Session, task: str) -> None:
     """Run one full task end-to-end (the plan-first loop)."""
+    from ._pricing import estimate_turn_cost_usd, format_cost
+
     cwd = Path(session.cwd)
     ctx, picks, why = _build_context(task, session=session, cwd=cwd, console=console)
     if picks:
         _ui.render_skills_picked(console, picks, why)
+
+    # Pre-flight projected cost so the user sees what this turn will cost
+    # before paying for it. Empty / no-price models show ($?).
+    tokens, projected = estimate_turn_cost_usd(
+        ctx, provider=session.provider, model=session.model,
+        max_tokens=session.max_tokens, n_calls=3,
+    )
+    cost_str = format_cost(projected) if projected else "—"
+    console.print(
+        f"[meta]context ~{tokens:,} tokens · projected cost: "
+        f"[brand]{cost_str}[/brand][/meta]"
+    )
 
     turn = TaskTurn(task=task, skills_used=picks)
 

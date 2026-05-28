@@ -63,6 +63,12 @@ def show_banner(
     console.print(
         "[hint]type your task to begin · /help for commands · /bg <cmd> for background · /quit to exit[/hint]"
     )
+    # First-run nudge: if we're not in an initialized project, suggest init.
+    if project is not None and not getattr(project, "has_essarion_dir", False):
+        console.print(
+            "[hint]first time here? run `essarion init` to set up "
+            ".essarion/{config.toml, sessions/, memory.md}.[/hint]"
+        )
     console.print(Rule(style="brand.dim"))
 
 

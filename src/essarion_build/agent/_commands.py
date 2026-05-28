@@ -25,16 +25,62 @@ from ._session import Session
 CommandResult = str  # "continue" | "quit"
 
 
+_HELP_GROUPS: list[tuple[str, list[str]]] = [
+    ("session", ["/whoami", "/history", "/save", "/load", "/export", "/clear", "/version", "/quit"]),
+    ("planning", ["/ask"]),
+    ("workflows", ["/review", "/fix", "/tests", "/refactor", "/docs", "/security", "/perf", "/explain", "/pr"]),
+    ("models & cost", ["/model", "/escalate", "/budget", "/cost", "/stream"]),
+    ("skills & memory", ["/skills", "/remember", "/forget"]),
+    ("project & files", ["/cd", "/pwd"]),
+    ("changes & verify", ["/diff", "/undo", "/commit", "/verify"]),
+    ("background", ["/bg"]),
+    ("safety", ["/yolo"]),
+    ("help", ["/help"]),
+]
+
+
 def _cmd_help(console: Console, session: Session, args: str) -> CommandResult:
-    table = Table(title="commands", title_style="brand", show_lines=False)
+    """Show every slash command, grouped by area.
+
+    `/help <substring>` filters to commands matching the substring.
+    """
+    arg = args.strip().lower()
+    if arg and not arg.startswith("/"):
+        arg = "/" + arg
+
+    table = Table(title="essarion build · commands", title_style="brand", show_lines=False)
+    table.add_column("group", style="phase.plan")
     table.add_column("command", style="key")
     table.add_column("description", style="meta")
-    for name, (_fn, desc) in COMMANDS.items():
-        table.add_row(name, desc)
+
+    shown = 0
+    seen: set[str] = set()
+    for group, cmds in _HELP_GROUPS:
+        for cmd in cmds:
+            if cmd not in COMMANDS:
+                continue
+            seen.add(cmd)
+            if arg and arg not in cmd:
+                continue
+            _, desc = COMMANDS[cmd]
+            table.add_row(group, cmd, desc)
+            shown += 1
+        # blank row between groups for visual rhythm.
+        if shown and not arg:
+            table.add_row("", "", "")
+    # Any commands not in _HELP_GROUPS (forgot to categorize) go in "misc".
+    misc = [c for c in COMMANDS if c not in seen]
+    if misc and not arg:
+        for cmd in misc:
+            _, desc = COMMANDS[cmd]
+            table.add_row("misc", cmd, desc)
+
     console.print(table)
-    console.print(
-        "\n[hint]anything that doesn't start with `/` is treated as a task.[/hint]"
-    )
+    if not arg:
+        console.print(
+            "[hint]anything not starting with `/` is treated as a task. "
+            "`<verb>: <target>` (e.g. `review: src/auth.py`) routes to a workflow.[/hint]"
+        )
     return "continue"
 
 
@@ -395,6 +441,147 @@ def _cmd_commit(console: Console, session: Session, args: str) -> CommandResult:
     return "continue"
 
 
+def _cmd_stream(console: Console, session: Session, args: str) -> CommandResult:
+    """Toggle streamed draft output (tokens land as they're generated)."""
+    arg = args.strip().lower()
+    if arg == "on":
+        session.stream = True
+    elif arg == "off":
+        session.stream = False
+    elif arg == "":
+        session.stream = not session.stream
+    else:
+        console.print("[err]usage: /stream [on|off][/err]")
+        return "continue"
+    state = "ON" if session.stream else "OFF"
+    style = "ok" if session.stream else "meta"
+    console.print(f"[{style}]streaming: {state}[/{style}]")
+    return "continue"
+
+
+def _cmd_cost(console: Console, session: Session, args: str) -> CommandResult:
+    """Show projected and actual cost.
+
+    With no args: print the session ledger (per-turn, total).
+    With a path/dir: estimate the cost of running a turn against it.
+    """
+    from rich.table import Table
+
+    from ._pricing import estimate_turn_cost_usd, format_cost
+
+    arg = args.strip()
+    if arg:
+        # Estimate against a hypothetical context that loaded `arg` from disk.
+        from .. import Context
+        from pathlib import Path
+
+        ctx = Context()
+        path = Path(session.cwd) / arg
+        if path.is_file():
+            ctx.add_file(path)
+        elif path.is_dir():
+            ctx.add_repo(path, max_files=200)
+        else:
+            console.print(f"[err]not a file or directory: {arg}[/err]")
+            return "continue"
+        tokens, projected = estimate_turn_cost_usd(
+            ctx,
+            provider=session.provider,
+            model=session.model,
+            max_tokens=session.max_tokens,
+        )
+        console.print(
+            f"[meta]target [/meta][brand]{arg}[/brand][meta] · "
+            f"~{tokens:,} tokens · projected [/meta]"
+            f"[brand]{format_cost(projected)}[/brand]"
+        )
+        return "continue"
+
+    # Per-turn ledger.
+    if not session.history:
+        console.print("[meta](no turns this session)[/meta]")
+        return "continue"
+
+    table = Table(title="session cost", title_style="brand")
+    table.add_column("#", style="meta", justify="right")
+    table.add_column("task", style="key")
+    table.add_column("tokens", justify="right", style="meta")
+    table.add_column("cost", justify="right", style="brand")
+    for i, turn in enumerate(session.history, 1):
+        table.add_row(
+            str(i),
+            turn.task[:60],
+            f"{turn.usage.total_tokens:,}",
+            format_cost(turn.cost_usd),
+        )
+    console.print(table)
+    console.print(
+        f"[brand]total[/brand]: "
+        f"[brand]{session.total_usage.total_tokens:,}[/brand] tokens · "
+        f"[brand]{format_cost(session.total_cost_usd)}[/brand] "
+        f"[meta]of budget ${session.budget_usd:.2f}[/meta]"
+    )
+    return "continue"
+
+
+def _cmd_whoami(console: Console, session: Session, args: str) -> CommandResult:
+    """One-screen status: project + model + memory + sessions dir."""
+    from rich.table import Table
+
+    from .. import __version__
+    from ._memory import load_memory
+    from ._project import find_project_root
+
+    project = find_project_root(session.cwd)
+    memory = load_memory(session.cwd)
+
+    table = Table.grid(padding=(0, 2))
+    table.add_column(style="meta", justify="right")
+    table.add_column()
+    table.add_row("essarion", f"[brand]{__version__}[/brand]")
+    table.add_row("session", session.id)
+    if project.detected_by:
+        table.add_row(
+            "project",
+            f"{project.root}  [hint]({project.detected_by})[/hint]",
+        )
+    else:
+        table.add_row("cwd", session.cwd)
+    table.add_row("sessions dir", str(project.sessions_dir))
+    table.add_row(
+        "model",
+        f"{session.provider}/[brand]{session.model}[/brand]"
+        + (f"  [meta]escalate→[/meta] {session.escalate_model}" if session.escalate_model else ""),
+    )
+    table.add_row(
+        "skills",
+        f"picker mode [brand]{session.skills_mode}[/brand]",
+    )
+    table.add_row(
+        "budget",
+        f"${session.total_cost_usd:.4f} / [brand]${session.budget_usd:.2f}[/brand]",
+    )
+    table.add_row(
+        "memory",
+        f"{len(memory.facts)} fact(s)  [hint]({memory.path})[/hint]",
+    )
+    table.add_row(
+        "turns",
+        str(len(session.history)),
+    )
+    # Background tasks if any.
+    try:
+        from . import _background as bg
+
+        running = bg.current_manager().running_count()
+        if running:
+            table.add_row("bg tasks", f"[warn]{running} running[/warn]")
+    except Exception:  # noqa: BLE001
+        pass
+    console.print(table)
+    return "continue"
+
+
 def _cmd_ask(console: Console, session: Session, args: str) -> CommandResult:
     """Quick Q&A: runs reason() only (no draft), prints the plan inline."""
     from ._loop import _build_context, _run_plan_phase
@@ -607,6 +794,9 @@ COMMANDS: dict[str, tuple[Callable, str]] = {
     "/undo": (_cmd_undo, "revert the most recent agent-applied change"),
     "/commit": (_cmd_commit, "git-commit the session's changes"),
     "/ask": (_cmd_ask, "quick reason() only, no draft phase"),
+    "/cost": (_cmd_cost, "show session cost ledger or estimate against a path"),
+    "/stream": (_cmd_stream, "toggle streamed draft output (token-by-token)"),
+    "/whoami": (_cmd_whoami, "one-screen status: project + model + memory + budget"),
     "/review": (_workflow_command("review"), "shortcut: workflows.review(<target>)"),
     "/fix": (_workflow_command("fix"), "shortcut: workflows.fix_bug(<target>)"),
     "/tests": (_workflow_command("tests"), "shortcut: workflows.write_tests(<target>)"),
