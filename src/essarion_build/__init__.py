@@ -29,6 +29,7 @@ from ._async_runtime import AsyncLiteRuntime, AsyncRuntime, select_async_runtime
 from ._cache import CachingProvider, ResponseCache
 from ._compaction import compact, keep_only_files, truncate_files
 from ._config import configure
+from ._config_file import load_config_file, starter_skills
 from ._context import Context, Diff
 from ._conversation import Conversation, ConversationTurn
 from ._decorators import ReasonedFunction, list_reasoned, reasoned
@@ -118,6 +119,8 @@ __all__ = [
     "register_async_provider",
     "unregister_async_provider",
     "configure",
+    "load_config_file",
+    "starter_skills",
     # Cache
     "ResponseCache",
     "CachingProvider",
