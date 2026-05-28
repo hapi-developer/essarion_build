@@ -46,6 +46,7 @@ from ._providers import (
     unregister_provider,
 )
 from ._reasoning import Reasoning, reason
+from ._schemas import SchemaValidationError, agenerate_json, generate_json
 from ._runtime import LiteRuntime, Runtime, select_runtime
 from ._skills import list_skills, load_skill
 from ._prompts import configure_prompts, reset_prompts
@@ -93,11 +94,13 @@ __all__ = [
     # Sync API
     "reason",
     "generate",
+    "generate_json",
     "stream_reason",
     "stream_generate",
     # Async API
     "areason",
     "agenerate",
+    "agenerate_json",
     # Batch
     "batch_reason",
     "batch_generate",
@@ -158,6 +161,7 @@ __all__ = [
     "ProviderResponseError",
     "ContextError",
     "ReasoningFormatError",
+    "SchemaValidationError",
     "auth",
     "evals",
     "__version__",

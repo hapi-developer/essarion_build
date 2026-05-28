@@ -47,6 +47,16 @@ def test_cli_providers_lists_known(capsys: pytest.CaptureFixture) -> None:
         assert name in out
 
 
+def test_cli_workflows_lists_known(capsys: pytest.CaptureFixture) -> None:
+    rc = main(["workflows"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    for name in ["review", "fix_bug", "write_tests", "refactor", "docs",
+                 "security_review", "performance_review", "write_pr_description",
+                 "explain_code"]:
+        assert name in out
+
+
 def test_cli_estimate_with_repo(tmp_path, capsys: pytest.CaptureFixture) -> None:
     (tmp_path / "a.py").write_text("print('x')\n")
     rc = main(["estimate", "--repo", str(tmp_path), "--json"])

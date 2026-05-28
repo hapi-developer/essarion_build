@@ -359,6 +359,121 @@ generate("...", provider="my-llm", model="my-model-v1")
 
 Async siblings (`register_async_provider`, `build_async_provider`, `AsyncProvider` protocol) follow the same shape.
 
+## Structured output (JSON-schema mode)
+
+When you want a typed payload instead of free text, use `generate_json`:
+
+```python
+from pydantic import BaseModel
+from essarion_build import Context, generate_json
+
+class ReviewFinding(BaseModel):
+    file: str
+    line: int
+    severity: str  # "info" | "warning" | "error"
+    description: str
+    suggested_fix: str
+
+parsed, gen = generate_json(
+    "review src/auth.py for a single finding",
+    schema=ReviewFinding,
+    context=Context().with_skill("code_review"),
+)
+finding = ReviewFinding(**parsed)
+print(finding.severity, finding.suggested_fix)
+```
+
+If the model emits invalid JSON (or fails Pydantic validation), the
+runtime automatically reframes the task with the validation error and
+asks once more. After the second failure, `SchemaValidationError` is
+raised with the last output for inspection.
+
+Pass a raw JSON schema dict if you don't want Pydantic in the mix:
+
+```python
+parsed, gen = generate_json("…", schema={"type": "object", "required": ["a", "b"]}, …)
+```
+
+Async sibling: `agenerate_json(...)`.
+
+## Compaction
+
+When your Context exceeds the token budget:
+
+```python
+from essarion_build import Context, compact, truncate_files, keep_only_files
+
+ctx = Context().with_all_skills().add_repo("./src")
+print(ctx.estimate_tokens())              # e.g. 380_000
+
+# Drop low-signal sections (repo files first, then docs) to fit a budget.
+ctx = compact(ctx, max_tokens=40_000)
+
+# Or cap each file body individually with a truncation marker.
+ctx = truncate_files(ctx, max_chars_per_file=4_000)
+
+# Or filter the file set by glob.
+ctx = keep_only_files(ctx, patterns=["src/auth/*", "src/billing/*"])
+```
+
+`compact()` never drops skills, notes, or diffs — they are the
+high-signal content.
+
+## Evals
+
+A model-driven SDK without evals is a benchmark waiting to regress.
+`essarion_build.evals` is a thin harness for running a labeled benchmark
+against any callable runner:
+
+```python
+from essarion_build.evals import EvalCase, contains_all, run_eval
+from essarion_build import Context, reason
+
+CASES = [
+    EvalCase(task="audit JWT alg=none confusion", expected="whitelist, alg=none"),
+    EvalCase(task="audit a SQL injection",        expected="parameterized, prepared"),
+]
+
+def runner(task: str):
+    r = reason(task, context=Context().with_skill("secure_coding"))
+    return r.plan, r.usage    # tuple → usage flows into the report
+
+report = run_eval(CASES, runner, contains_all, name="security-v1")
+print(report.summary())       # → "security-v1: 2/2 passed (100%, mean 1.00). Tokens: …"
+
+# Compare against a baseline for CI gating
+delta = report.delta(baseline_report)
+if delta["regressed"]:
+    raise SystemExit(f"Regressions: {delta['regressed']}")
+```
+
+Built-in scorers: `exact_match`, `contains_all`, `keyword_overlap`.
+Roll your own — it's just a function returning `Score`.
+
+## Tools (model-side)
+
+`essarion_build` ships a small, opt-in tool surface that works on every
+provider (no native tool-use required):
+
+```python
+from essarion_build import register_tool, run_tools_in_plan, Context, tool_manifest
+
+@register_tool("read_file", description="read a file from disk")
+def _read(path: str) -> str:
+    return open(path).read()
+
+ctx = Context().with_all_skills().add_note(tool_manifest())
+
+# The model emits <tool_call name='read_file'>{"path": "…"}</tool_call>;
+# you evaluate them before the next turn:
+plan_with_results = run_tools_in_plan(plan_text, allow={"read_file"})
+```
+
+The `allow` set is a security boundary — unknown or disallowed tools
+become inline `<tool_result error="true">…</tool_result>` instead of
+running. Use this for the small-tool case (look up the schema, fetch a
+URL); for full agent loops, build directly on `Provider.complete()`.
+
 ## CLI
 
 The package installs an `essarion-build` console command. Useful for one-off coding tasks, CI scripts, and editor integrations:
@@ -372,6 +487,9 @@ essarion-build skills --show secure_coding
 
 # List recognized providers
 essarion-build providers
+
+# List bundled workflows
+essarion-build workflows
 
 # Estimate token cost of a context before sending
 essarion-build estimate --repo ./ --json

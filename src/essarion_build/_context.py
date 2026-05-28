@@ -265,6 +265,35 @@ class Context(BaseModel):
         self.agent_skills.append(AgentSkillRef(name=name))
         return self
 
+    def merge(self, other: "Context") -> Self:
+        """Mutate `self` to include every entry from `other`.
+
+        Useful for composing a "base" Context (skills, house style) with a
+        task-specific one (repo focus, diff). Duplicates are kept — this
+        is a union, not a set-merge — but `repo_files` are de-duplicated
+        by `path` (the second occurrence wins).
+        """
+        existing_paths = {f.path for f in self.repo_files}
+        for f in other.repo_files:
+            if f.path in existing_paths:
+                # Replace older file body with the newer one.
+                for i, ours in enumerate(self.repo_files):
+                    if ours.path == f.path:
+                        self.repo_files[i] = f
+                        break
+            else:
+                self.repo_files.append(f)
+                existing_paths.add(f.path)
+
+        self.docs.extend(other.docs)
+        self.builtin_skills.extend(other.builtin_skills)
+        self.custom_skills.extend(other.custom_skills)
+        self.diffs.extend(other.diffs)
+        self.notes.extend(other.notes)
+        self.sources.extend(other.sources)
+        self.agent_skills.extend(other.agent_skills)
+        return self
+
     def total_chars(self) -> int:
         """Estimate context size (in characters) without rendering."""
         n = 0

@@ -111,3 +111,42 @@ def test_empty_context_estimate_is_at_least_one() -> None:
     """estimate_tokens() must never return zero — that would mislead callers
     into thinking no budget is needed."""
     assert Context().estimate_tokens() >= 1
+
+
+def test_context_merge_unions_all_sections() -> None:
+    from essarion_build._context import RepoFile
+
+    base = (
+        Context()
+        .with_skill("scope_discipline")
+        .add_note("rule one")
+    )
+    base.repo_files.append(RepoFile(path="a.py", content="old"))
+
+    other = (
+        Context()
+        .with_skill("testing")
+        .add_note("rule two")
+        .add_diff("--- a\n+++ b\n+x")
+    )
+    other.repo_files.append(RepoFile(path="b.py", content="b"))
+
+    merged = base.merge(other)
+    names = {s.name for s in merged.builtin_skills}
+    assert names == {"scope_discipline", "testing"}
+    assert merged.notes == ["rule one", "rule two"]
+    assert len(merged.diffs) == 1
+    assert {f.path for f in merged.repo_files} == {"a.py", "b.py"}
+
+
+def test_context_merge_dedups_repo_files_by_path_newest_wins() -> None:
+    from essarion_build._context import RepoFile
+
+    base = Context()
+    base.repo_files.append(RepoFile(path="a.py", content="OLD"))
+    other = Context()
+    other.repo_files.append(RepoFile(path="a.py", content="NEW"))
+
+    merged = base.merge(other)
+    assert len(merged.repo_files) == 1
+    assert merged.repo_files[0].content == "NEW"

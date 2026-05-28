@@ -95,8 +95,74 @@ surface; existing v0.2 code keeps working.
 - README rewritten end to end. Architecture diagram up top; provider table covers all six; workflows / streaming / async / batching / conversation / cache / CLI / validators all documented with runnable examples.
 - `pyproject.toml` adds `[project.scripts]` for the `essarion-build` CLI, adds `pytest-asyncio` to the test extras, sets `asyncio_mode = "auto"`.
 
+### Added — structured output
+- `generate_json(task, schema=...)` / `agenerate_json(...)` — generate a JSON object that validates against a Pydantic model or a raw JSON schema dict. One automatic repair pass on validation failure. `SchemaValidationError` if even the repair pass fails.
+- Re-exported `SchemaValidationError` from the package root.
+
+### Added — evaluation harness
+- `essarion_build.evals.EvalCase`, `Score`, `CaseResult`, `Report`.
+- `run_eval(cases, runner, scorer)` runs every case, scores, aggregates token usage.
+- Built-in scorers: `exact_match`, `contains_all`, `keyword_overlap`.
+- `Report.delta(baseline)` returns regressed/improved lists for CI gates.
+- Re-exported as `essarion_build.evals`.
+
+### Added — context compaction
+- `compact(ctx, max_tokens=N)` trims repo files then docs until the context fits.
+- `truncate_files(ctx, max_chars_per_file=N)` caps individual file bodies with a `(truncated)` marker.
+- `keep_only_files(ctx, patterns=[...])` filters repo files by fnmatch glob.
+- All return a new Context — the input is untouched.
+- `Context.merge(other)` unions every section; repo files de-dup by path with newest-wins.
+
+### Added — telemetry
+- `configure_telemetry(on_event=, enabled=)` wires a user callback for SDK events.
+- Events: `loop_start`, `phase_call`, `phase_done`, `tag_repair_attempt`, `tag_repair_failed`, `loop_done`.
+- Buggy user callbacks are swallowed so they can never break the loop.
+
+### Added — prompt overrides
+- `configure_prompts(system=, plan=, draft=, selfcheck_reason=, selfcheck_generate=)` for teams that want their own house voice.
+- `reset_prompts()` restores defaults.
+
+### Added — tools (model-side)
+- `register_tool(name, description=)` decorator.
+- `run_tools_in_plan(text, allow=)` evaluates `<tool_call>` tags in arbitrary text, replacing them with `<tool_result>` (or `<tool_result error="true">`).
+- `tool_manifest()` prints a one-line summary for injection into Context.
+- Provider-agnostic by design — works on every backend.
+
+### Added — pytest plugin
+- `essarion_build.pytest_plugin` provides fixtures: `essarion_stub`, `essarion_async_stub`, `essarion_runtime`, `essarion_async_runtime`, `essarion_context`, `essarion_skills`, `isolated_prompts`, `isolated_telemetry`, `isolated_providers`.
+
+### Added — auth
+- `essarion_build.auth.from_env(*providers)` reads provider env vars and returns a `Credential` for `configure()`.
+- `from_platform_api(token)` still NotImplementedError, but now rejects empty/whitespace tokens with ValueError so typos are distinguishable from "not shipped yet".
+
+### Added — workflows (+4)
+- `security_review()` — threat-model-shaped review with CWE/OWASP refs.
+- `performance_review()` — hot-path analysis with expected-payoff estimates.
+- `write_pr_description()` — generates a PR body (summary, why, what, test plan, risk).
+- `explain_code()` — 3-layer explanation (1 sentence / 5 sentences / full walkthrough).
+
+### Added — skills (+21 total, 42 in v0.3)
+- `rust_idioms`, `go_idioms`, `sql_idioms`
+- `react_patterns`, `state_management`
+- `accessibility`, `internationalization`
+- `caching`, `microservices`, `event_driven`
+- `feature_flags`, `migrations`, `release_engineering`, `incident_response`
+- `llm_integration`, `dx`
+- `dependency_injection`, `cloud_infra`, `kubernetes`, `code_style`, `code_smells`
+
+### Added — CLI subcommands
+- `essarion-build workflows` lists bundled workflows with their docstrings.
+
+### Added — docs and examples
+- `examples/` — 8 runnable scripts (quick start, workflows, streaming, async batch, conversation, telemetry, custom provider, cache).
+- `docs/COOKBOOK.md` — 20 runnable recipes covering every public surface.
+- `docs/ARCHITECTURE.md` — two-page internal-structure tour.
+
+### Added — CI
+- `.github/workflows/ci.yml` matrix over 3.11/3.12/3.13 + CLI smoke job + build+twine check.
+
 ### Tests
-- Suite grew from 42 to 121 cases. New files: `test_async_api.py`, `test_streaming.py`, `test_context_extras.py`, `test_conversation.py`, `test_cache.py`, `test_workflows.py`, `test_cli.py`, `test_validators.py`, `test_batch.py`.
+- Suite grew from 42 to 192 cases. New files: `test_async_api.py`, `test_streaming.py`, `test_context_extras.py`, `test_conversation.py`, `test_cache.py`, `test_workflows.py`, `test_cli.py`, `test_validators.py`, `test_batch.py`, `test_telemetry.py`, `test_prompts.py`, `test_tools.py`, `test_pytest_plugin.py`, `test_auth.py`, `test_evals.py`, `test_compaction.py`, `test_schemas.py`.
 
 ## [0.2.0] - 2026-05-28
 

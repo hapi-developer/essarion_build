@@ -101,6 +101,17 @@ def cmd_version(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_workflows(args: argparse.Namespace) -> int:
+    """Print the list of bundled workflows."""
+    from . import workflows as wf
+
+    for name in wf.__all__:
+        fn = getattr(wf, name)
+        doc = (fn.__doc__ or "").strip().split("\n", 1)[0]
+        print(f"{name:24s} {doc}")
+    return 0
+
+
 def cmd_estimate(args: argparse.Namespace) -> int:
     ctx = _make_context(args)
     chars = ctx.total_chars()
@@ -249,6 +260,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_version = sub.add_parser("version", help="Print the SDK version")
     p_version.set_defaults(func=cmd_version)
+
+    p_workflows = sub.add_parser("workflows", help="List bundled workflows")
+    p_workflows.set_defaults(func=cmd_workflows)
 
     p_estimate = sub.add_parser(
         "estimate", help="Estimate token cost of a Context"
