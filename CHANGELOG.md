@@ -7,6 +7,70 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-05-28
+
+The "project folders and background tasks" follow-up. Same SDK
+underneath; the agent gains project awareness and a parallel-task
+runtime.
+
+### Added — project folders
+- `essarion init [<path>]` creates `<path>/.essarion/` with starter
+  `config.toml`, per-project `sessions/` directory, and a `.gitignore`
+  that ignores stored sessions.
+- `essarion` now auto-detects the project root by walking up looking
+  for `.essarion/`, then `.git/`, then `pyproject.toml` / `package.json`
+  / `Cargo.toml` / `go.mod` / `pom.xml` / `build.gradle` / `Gemfile`.
+  The sandbox CWD anchors to the project root unless `--cwd` overrides.
+- Per-project `<root>/.essarion/config.toml` is loaded at startup;
+  `[defaults]` overrides the SDK defaults and `[agent]` sets
+  `budget` / `skills_mode` / `escalate_model`.
+- Sessions persist to `<root>/.essarion/sessions/{id}.json` when a
+  `.essarion/` directory is present; otherwise they go in the global
+  `~/.essarion/sessions/` like before. `--resume <id>` looks in both.
+- New banner row "project … (detected by .essarion/)" identifies what
+  triggered the project anchor.
+
+### Added — background tasks
+- `essarion_build.agent._background` ships a `TaskManager` that runs
+  shell commands via `subprocess.Popen` with non-blocking
+  stdout/stderr drained into bounded ring buffers (500 lines per
+  stream per task). Tasks run in parallel and can be polled, tailed,
+  waited on, or killed.
+- New slash command `/bg`:
+  - `/bg <cmd>`              start a task
+  - `/bg detached <cmd>`     start one that survives REPL exit
+  - `/bg`                    list every task with status table
+  - `/bg show <id>`          status + recent output of one task
+  - `/bg wait <id> [secs]`   block until done
+  - `/bg kill <id>`          terminate
+  - `/bg clear`              forget finished tasks
+- New tools (registered with the SDK's `tools.register_tool` surface,
+  so the model can also call them):
+  `start_background(cmd, name=, detached=)`,
+  `check_background(id, tail=)`,
+  `wait_background(id, timeout_seconds=)`,
+  `kill_background(id)`,
+  `list_background()`.
+- Completion notices: when a task finishes between turns, the next
+  REPL prompt prints a single `[bg] [abc123] cmd → done (exit 0, 1.2s)`
+  notice so the user never has to ask.
+- Footer status line gains a `bg N running` indicator when any tasks
+  are alive.
+- On `/quit`, the manager terminates every non-detached task using
+  SIGTERM → grace → SIGKILL via the child's process group, so e.g.
+  a `npm run dev` and its spawned `node` child both die cleanly.
+
+### Added — discovery tools
+- `find_files(pattern, path=".")` — fnmatch on file name, skips VCS
+  and node_modules / build dirs.
+- `glob(pattern)` — path-shaped glob from the sandbox root, supports
+  `**`.
+
+### Tests
+- Suite grew from 284 to 318 cases. New files:
+  `test_agent_project.py`, `test_agent_background.py`,
+  `test_agent_tools_discovery.py`.
+
 ## [0.4.0] - 2026-05-28
 
 The "essarion CLI coding agent" release. v0.3 made `essarion-build` a
@@ -263,7 +327,8 @@ surface; existing v0.2 code keeps working.
 ### Tests
 - Suite grew from 26 to 42 cases. Added coverage for tag repair (happy path, failed repair, no-repair-needed), usage arithmetic and aggregation, per-call `max_tokens` override, and HTTP error mapping / retry behavior via `httpx.MockTransport`.
 
-[Unreleased]: https://github.com/hapi-developer/essarion_build/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/hapi-developer/essarion_build/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/hapi-developer/essarion_build/releases/tag/v0.4.1
 [0.4.0]: https://github.com/hapi-developer/essarion_build/releases/tag/v0.4.0
 [0.3.0]: https://github.com/hapi-developer/essarion_build/releases/tag/v0.3.0
 [0.2.0]: https://github.com/hapi-developer/essarion_build/releases/tag/v0.2.0

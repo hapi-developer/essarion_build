@@ -10,6 +10,12 @@ from pathlib import Path
 
 from .._config import current
 from ._loop import repl
+from ._project import (
+    Project,
+    find_project_root,
+    init_project,
+    load_project_config,
+)
 from ._session import (
     Session,
     list_sessions,
@@ -75,10 +81,44 @@ def build_agent_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _initial_session(args: argparse.Namespace) -> Session:
+def _apply_project_config(
+    args: argparse.Namespace, project: Project
+) -> dict:
+    """Mutate `args` to fold in `<project>/.essarion/config.toml` defaults.
+
+    CLI flags always win. Returns the parsed config dict for inspection.
+    """
+    data = load_project_config(project)
+    defaults = data.get("defaults", {}) or {}
+    agent_cfg = data.get("agent", {}) or {}
+
+    if args.provider is None and "provider" in defaults:
+        args.provider = defaults["provider"]
+    if args.model is None and "model" in defaults:
+        args.model = defaults["model"]
+    if args.max_tokens is None and "max_tokens" in defaults:
+        args.max_tokens = int(defaults["max_tokens"])
+    if args.escalate is None and "escalate_model" in agent_cfg:
+        args.escalate = agent_cfg["escalate_model"] or None
+    # `budget` and `skills` use argparse defaults so check against those.
+    if args.budget == 1.00 and "budget" in agent_cfg:
+        try:
+            args.budget = float(agent_cfg["budget"])
+        except (TypeError, ValueError):
+            pass
+    if args.skills == "auto" and "skills_mode" in agent_cfg:
+        if agent_cfg["skills_mode"] in {"auto", "all", "none"}:
+            args.skills = agent_cfg["skills_mode"]
+    return data
+
+
+def _initial_session(args: argparse.Namespace, project: Project) -> Session:
     """Build the Session object the REPL will mutate."""
+    cfg = current()
+    sessions_dir = project.sessions_dir
+
     if args.resume:
-        s = load_session(args.resume)
+        s = load_session(args.resume, sessions_dir=sessions_dir)
         # Allow CLI overrides to win
         if args.cwd:
             s.cwd = str(Path(args.cwd).resolve())
@@ -96,10 +136,11 @@ def _initial_session(args: argparse.Namespace) -> Session:
             s.budget_usd = args.budget
         return s
 
-    cfg = current()
+    # New session, anchored to the project root.
+    cwd = str(Path(args.cwd).resolve())
     return Session(
         id=new_session_id(),
-        cwd=str(Path(args.cwd).resolve()),
+        cwd=cwd,
         provider=args.provider or cfg.provider,
         model=args.model or cfg.model,
         escalate_model=args.escalate or None,
@@ -109,6 +150,21 @@ def _initial_session(args: argparse.Namespace) -> Session:
     )
 
 
+def cmd_init(argv: list[str] | None = None) -> int:
+    """`essarion init [<path>]` — create `.essarion/` in the chosen dir."""
+    p = argparse.ArgumentParser(prog="essarion init", description="Initialize a project for the essarion agent.")
+    p.add_argument("path", nargs="?", default=".", help="project root (default: cwd)")
+    args = p.parse_args(argv)
+    project = init_project(args.path)
+    console = make_console()
+    console.print(
+        f"[ok]initialized[/ok] [brand]{project.essarion_dir}[/brand]\n"
+        f"[meta]config:[/meta] {project.essarion_dir / 'config.toml'}\n"
+        f"[meta]sessions:[/meta] {project.essarion_dir / 'sessions'}"
+    )
+    return 0
+
+
 def run_agent(argv: list[str] | None = None) -> int:
     """Entry point invoked when the user types `essarion` (no subcommand).
 
@@ -116,7 +172,17 @@ def run_agent(argv: list[str] | None = None) -> int:
     """
     parser = build_agent_parser()
     args = parser.parse_args(argv)
-    session = _initial_session(args)
+
+    # Detect the project root; anchor the sandbox there unless --cwd overrides.
+    project = find_project_root(args.cwd)
+    if args.cwd == os.getcwd() and project.root != Path(args.cwd).resolve():
+        # Only auto-anchor when the user didn't pass --cwd explicitly.
+        args.cwd = str(project.root)
+
+    # Fold any project-level config defaults into args.
+    _apply_project_config(args, project)
+
+    session = _initial_session(args, project)
 
     console = make_console()
     bind_tools(session.cwd)
@@ -126,15 +192,26 @@ def run_agent(argv: list[str] | None = None) -> int:
 
     if args.task:
         # Non-interactive single-task mode — pipes-friendly.
+        from ._background import shutdown_manager
         from ._loop import run_turn
 
-        run_turn(console, session, args.task)
+        try:
+            run_turn(console, session, args.task)
+        finally:
+            shutdown_manager()
         return 0
 
+    # Show a banner that includes the project info.
     try:
-        show_banner(console, session, skill_count=len(list_skills()))
+        show_banner(
+            console, session, skill_count=len(list_skills()),
+            project=project,
+        )
         repl(console, session)
     except KeyboardInterrupt:
+        from ._background import shutdown_manager
+
+        shutdown_manager()
         console.print("\n[brand]bye.[/brand]")
     return 0
 
@@ -143,6 +220,7 @@ def main_or_subcommand(argv: list[str] | None = None) -> int:
     """Top-level dispatcher for the `essarion` console entry.
 
     - `essarion`                  → interactive agent REPL
+    - `essarion init [<path>]`    → create `.essarion/` skeleton
     - `essarion --task "..."`     → one-shot task
     - `essarion --resume <id>`    → resume a saved session
     - `essarion <subcommand>`     → existing CLI subcommands (skills,
@@ -153,14 +231,15 @@ def main_or_subcommand(argv: list[str] | None = None) -> int:
     """
     argv = sys.argv[1:] if argv is None else list(argv)
 
+    # `essarion init` is owned by the agent module.
+    if argv and argv[0] == "init":
+        return cmd_init(argv[1:])
+
     # Known subcommands from the existing CLI. Imported lazily so the agent
     # path doesn't pay for it.
     from ..cli import build_parser as _build_existing_parser
 
     existing = _build_existing_parser()
-    existing_actions = {
-        a.dest for a in existing._actions if isinstance(a, argparse._SubParsersAction)
-    }
     subcommand_names: set[str] = set()
     for a in existing._actions:
         if isinstance(a, argparse._SubParsersAction):

@@ -102,34 +102,50 @@ class Session(BaseModel):
         return min(1.0, self.total_cost_usd / self.budget_usd)
 
 
-def session_dir() -> Path:
-    """Where we persist sessions. Created lazily."""
-    p = Path.home() / ".essarion" / "sessions"
+def session_dir(custom: str | Path | None = None) -> Path:
+    """Where we persist sessions.
+
+    Pass `custom` (e.g. `<project>/.essarion/sessions/`) for per-project
+    storage. Falls back to the global `~/.essarion/sessions/`.
+    """
+    p = Path(custom) if custom is not None else Path.home() / ".essarion" / "sessions"
     p.mkdir(parents=True, exist_ok=True)
     return p
 
 
-def save_session(session: Session) -> Path:
-    """Write the session to ~/.essarion/sessions/<id>.json. Returns the path."""
-    path = session_dir() / f"{session.id}.json"
+def save_session(
+    session: Session, *, sessions_dir: str | Path | None = None
+) -> Path:
+    """Write the session to `<sessions_dir>/<id>.json`. Returns the path."""
+    path = session_dir(sessions_dir) / f"{session.id}.json"
     tmp = path.with_suffix(".tmp")
     tmp.write_text(session.model_dump_json(indent=2), encoding="utf-8")
     tmp.replace(path)
     return path
 
 
-def load_session(session_id: str) -> Session:
-    """Read a previously-saved session by id."""
-    path = session_dir() / f"{session_id}.json"
-    if not path.exists():
-        raise FileNotFoundError(f"no session at {path}")
-    return Session.model_validate_json(path.read_text(encoding="utf-8"))
+def load_session(
+    session_id: str, *, sessions_dir: str | Path | None = None
+) -> Session:
+    """Read a previously-saved session by id.
+
+    If `sessions_dir` is supplied (the per-project dir) we look there
+    first, then fall back to the global ~/.essarion/sessions/ dir.
+    """
+    candidates = []
+    if sessions_dir is not None:
+        candidates.append(session_dir(sessions_dir) / f"{session_id}.json")
+    candidates.append(session_dir() / f"{session_id}.json")
+    for path in candidates:
+        if path.exists():
+            return Session.model_validate_json(path.read_text(encoding="utf-8"))
+    raise FileNotFoundError(f"no session named {session_id!r}")
 
 
-def list_sessions() -> list[dict[str, Any]]:
+def list_sessions(sessions_dir: str | Path | None = None) -> list[dict[str, Any]]:
     """A list of saved session summaries (id, started_at, model, cost)."""
     out: list[dict[str, Any]] = []
-    for p in sorted(session_dir().glob("*.json")):
+    for p in sorted(session_dir(sessions_dir).glob("*.json")):
         try:
             data = json.loads(p.read_text(encoding="utf-8"))
             out.append(

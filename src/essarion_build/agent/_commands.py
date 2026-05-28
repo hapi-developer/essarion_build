@@ -168,15 +168,26 @@ def _cmd_history(console: Console, session: Session, args: str) -> CommandResult
     return "continue"
 
 
+def _resolve_sessions_dir(session: Session):
+    """Use the per-project sessions dir if the session's cwd lives inside a
+    project; otherwise None (the helpers fall back to ~/.essarion/sessions/)."""
+    from ._project import find_project_root
+
+    project = find_project_root(session.cwd)
+    return project.sessions_dir if project.has_essarion_dir else None
+
+
 def _cmd_save(console: Console, session: Session, args: str) -> CommandResult:
-    path = _session.save_session(session)
+    sd = _resolve_sessions_dir(session)
+    path = _session.save_session(session, sessions_dir=sd)
     console.print(f"[ok]saved → {path}[/ok]")
     return "continue"
 
 
 def _cmd_load(console: Console, session: Session, args: str) -> CommandResult:
     """Load is implemented at session-bootstrap time; here we just print sessions."""
-    sessions = _session.list_sessions()
+    sd = _resolve_sessions_dir(session)
+    sessions = _session.list_sessions(sessions_dir=sd)
     if not sessions:
         console.print("[meta]no saved sessions[/meta]")
         return "continue"
@@ -224,6 +235,140 @@ def _cmd_version(console: Console, session: Session, args: str) -> CommandResult
     return "continue"
 
 
+def _cmd_bg(console: Console, session: Session, args: str) -> CommandResult:
+    """Background task management.
+
+    Usage:
+      /bg                         list every running/finished task
+      /bg <shell command>         start a new background task
+      /bg run <cmd>               same as above (explicit)
+      /bg detached <cmd>          start one that survives REPL exit
+      /bg show <id>               print status + recent output of task <id>
+      /bg wait <id> [seconds]     block until <id> finishes
+      /bg kill <id>               terminate task <id>
+      /bg clear                   forget all finished tasks
+    """
+    from . import _background as bg
+
+    mgr = bg.current_manager()
+    arg = args.strip()
+
+    def _show_one(task_id: str) -> None:
+        try:
+            task = mgr.poll(task_id)
+        except KeyError:
+            console.print(f"[err]unknown task: {task_id}[/err]")
+            return
+        head = (
+            f"[brand][{task.id}][/brand] [key]{task.name}[/key]  "
+            f"status=[brand]{task.status}[/brand]"
+            + (f" exit={task.exit_code}" if task.exit_code is not None else "")
+            + f"  elapsed={task.elapsed_seconds:.1f}s"
+        )
+        console.print(head)
+        body = mgr.tail(task.id, lines=30)
+        if body.strip():
+            from rich.panel import Panel
+
+            console.print(Panel(body, border_style="meta", padding=(0, 1)))
+
+    # No args → list
+    if not arg:
+        tasks = mgr.poll_all()
+        if not tasks:
+            console.print("[meta](no background tasks — start one with /bg <cmd>)[/meta]")
+            return "continue"
+        from rich.table import Table
+
+        table = Table(title="background tasks", title_style="brand")
+        table.add_column("id", style="key")
+        table.add_column("status")
+        table.add_column("name", style="meta")
+        table.add_column("elapsed", justify="right", style="meta")
+        table.add_column("exit", justify="right", style="meta")
+        for t in tasks:
+            status_style = {"running": "warn", "done": "ok", "failed": "err", "killed": "err"}.get(t.status, "meta")
+            table.add_row(
+                t.id,
+                f"[{status_style}]{t.status}[/{status_style}]",
+                t.name[:60],
+                f"{t.elapsed_seconds:.1f}s",
+                "" if t.exit_code is None else str(t.exit_code),
+            )
+        console.print(table)
+        return "continue"
+
+    # Subcommands
+    parts = arg.split(maxsplit=1)
+    head = parts[0]
+    rest = parts[1] if len(parts) > 1 else ""
+
+    if head == "clear":
+        n = mgr.clear_finished()
+        console.print(f"[ok]cleared {n} finished task(s)[/ok]")
+        return "continue"
+
+    if head == "show":
+        if not rest:
+            console.print("[err]usage: /bg show <id>[/err]")
+            return "continue"
+        _show_one(rest.strip())
+        return "continue"
+
+    if head == "wait":
+        wparts = rest.split()
+        if not wparts:
+            console.print("[err]usage: /bg wait <id> [seconds][/err]")
+            return "continue"
+        task_id = wparts[0]
+        timeout = float(wparts[1]) if len(wparts) > 1 else 60.0
+        with console.status(f"[brand]waiting for {task_id} (≤{timeout:.0f}s)…[/brand]"):
+            try:
+                task = mgr.wait(task_id, timeout=timeout)
+            except KeyError:
+                console.print(f"[err]unknown task: {task_id}[/err]")
+                return "continue"
+        _show_one(task.id)
+        return "continue"
+
+    if head == "kill":
+        if not rest:
+            console.print("[err]usage: /bg kill <id>[/err]")
+            return "continue"
+        try:
+            task = mgr.kill(rest.strip())
+        except KeyError:
+            console.print(f"[err]unknown task: {rest.strip()}[/err]")
+            return "continue"
+        console.print(f"[ok]killed [{task.id}] (exit {task.exit_code})[/ok]")
+        return "continue"
+
+    # `/bg run <cmd>`, `/bg detached <cmd>`, or `/bg <cmd>` (treat whole arg as cmd)
+    detached = False
+    if head == "detached":
+        detached = True
+        cmd = rest
+    elif head == "run":
+        cmd = rest
+    else:
+        cmd = arg
+
+    if not cmd.strip():
+        console.print("[err]usage: /bg <shell command>[/err]")
+        return "continue"
+
+    task = mgr.start(cmd, detached=detached)
+    if task.is_running:
+        suffix = " [warn](detached)[/warn]" if detached else ""
+        console.print(
+            f"[ok]started[/ok] [brand][{task.id}][/brand] "
+            f"[meta]pid={task.pid} · {task.name}[/meta]{suffix}"
+        )
+    else:
+        console.print(f"[err]failed to start[/err]: {task.stderr_tail[:1]}")
+    return "continue"
+
+
 # Public dispatch table: name → (function, description).
 COMMANDS: dict[str, tuple[Callable, str]] = {
     "/help": (_cmd_help, "show this list"),
@@ -236,10 +381,11 @@ COMMANDS: dict[str, tuple[Callable, str]] = {
     "/cd": (_cmd_cd, "change the sandbox cwd"),
     "/pwd": (_cmd_pwd, "print the sandbox cwd"),
     "/history": (_cmd_history, "list this session's turns"),
-    "/save": (_cmd_save, "persist the session to ~/.essarion/sessions/"),
+    "/save": (_cmd_save, "persist the session to the sessions dir"),
     "/load": (_cmd_load, "list saved sessions"),
     "/export": (_cmd_export, "dump session JSON to stdout"),
     "/yolo": (_cmd_yolo, "toggle auto-approval of side-effect tools"),
+    "/bg": (_cmd_bg, "background tasks: run / list / show / wait / kill / clear"),
     "/version": (_cmd_version, "show the SDK version"),
 }
 

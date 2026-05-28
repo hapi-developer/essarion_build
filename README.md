@@ -99,6 +99,66 @@ essarion reason "task" --json
 essarion generate "task" --stream
 ```
 
+### Project folders
+
+Run `essarion init` inside a repo and you'll get a `.essarion/`
+directory with:
+
+- `config.toml` — per-project defaults (provider, model, budget, skills mode)
+- `sessions/` — saved sessions live with the project instead of in `~`
+- `.gitignore` — keeps sessions out of git
+
+Once initialized, any time you launch `essarion` from anywhere inside
+the project tree, the agent walks up to the project root, anchors the
+sandbox there, and loads `.essarion/config.toml`. No `.essarion/`?
+The agent still finds the project root via `.git/`, `pyproject.toml`,
+`package.json`, `Cargo.toml`, `go.mod`, etc., and falls back to
+`~/.essarion/sessions/` for storage.
+
+### Background tasks
+
+Long-running commands shouldn't block the agent. Start them in the
+background and they run in parallel while you keep planning:
+
+```text
+you: /bg npm run dev
+  started [a3f9c1] pid=14852 · npm run dev
+
+you: /bg pytest -q
+  started [b7e221] pid=14855 · pytest -q
+
+you: /bg
+                  background tasks
+  ┏━━━━━━━━┳━━━━━━━━━┳━━━━━━━━━━━━━┳━━━━━━━━━┳━━━━━━┓
+  ┃ id     ┃ status  ┃ name        ┃ elapsed ┃ exit ┃
+  ┡━━━━━━━━╇━━━━━━━━━╇━━━━━━━━━━━━━╇━━━━━━━━━╇━━━━━━┩
+  │ a3f9c1 │ running │ npm run dev │   12.4s │      │
+  │ b7e221 │ done    │ pytest -q   │    4.7s │    0 │
+  └────────┴─────────┴─────────────┴─────────┴──────┘
+
+you: review src/auth.py
+  ── plan ──
+  …(plan as normal while npm run dev keeps serving)…
+
+  [bg] [b7e221] pytest -q → done (exit 0, 4.7s)   ← notice flushes here
+```
+
+- `/bg <cmd>` — start one
+- `/bg detached <cmd>` — start one that survives `/quit`
+- `/bg` — list every task with status
+- `/bg show <id>` — recent stdout/stderr
+- `/bg wait <id> [seconds]` — block until done
+- `/bg kill <id>` — terminate
+- `/bg clear` — forget finished tasks
+
+The same tools are registered with the SDK's tool registry, so the
+model can call `start_background` / `check_background` /
+`wait_background` / `kill_background` / `list_background` itself
+during reasoning. The footer always shows `bg N running` when tasks
+are alive; completion notices print between turns; `/quit` cleanly
+kills every non-detached task (SIGTERM → grace → SIGKILL via process
+group, so dev-server children die too).
+
 ### Slash commands (inside the REPL)
 
 | Command | Description |
@@ -110,10 +170,11 @@ essarion generate "task" --stream
 | `/skills [auto\|all\|none]` | switch picker mode |
 | `/cd <path>` | change sandbox directory |
 | `/history` | list this session's turns |
-| `/save` | persist session to `~/.essarion/sessions/` |
+| `/save` | persist session (per-project or `~`) |
 | `/load` | list saved sessions |
+| `/bg [...]` | manage background tasks |
 | `/yolo` | toggle auto-approval of side-effect tools |
-| `/quit` | exit (also saves) |
+| `/quit` | exit (also saves, kills non-detached bg tasks) |
 
 ## Install
 

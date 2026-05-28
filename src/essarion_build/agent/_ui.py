@@ -27,8 +27,18 @@ def make_console() -> Console:
     return Console(theme=ESSARION_THEME, highlight=False)
 
 
-def show_banner(console: Console, session: Session, skill_count: int) -> None:
-    """The welcome screen — shown once at REPL start."""
+def show_banner(
+    console: Console,
+    session: Session,
+    skill_count: int,
+    *,
+    project=None,
+) -> None:
+    """The welcome screen — shown once at REPL start.
+
+    `project` (optional) is an `agent._project.Project`; when present we
+    label the cwd row with the marker that identified the project root.
+    """
     console.print(BANNER)
     console.print(TAGLINE)
     console.print()
@@ -36,7 +46,13 @@ def show_banner(console: Console, session: Session, skill_count: int) -> None:
     table.add_column(style="meta", justify="right")
     table.add_column()
     table.add_row("session", session.id)
-    table.add_row("cwd", session.cwd)
+    if project is not None and getattr(project, "detected_by", ""):
+        table.add_row(
+            "project",
+            f"{session.cwd}  [hint](detected by {project.detected_by})[/hint]",
+        )
+    else:
+        table.add_row("cwd", session.cwd)
     table.add_row("model", f"{session.provider}/[brand]{session.model}[/brand]")
     if session.escalate_model:
         table.add_row("escalate", f"{session.provider}/[brand]{session.escalate_model}[/brand]")
@@ -45,7 +61,7 @@ def show_banner(console: Console, session: Session, skill_count: int) -> None:
     console.print(table)
     console.print()
     console.print(
-        "[hint]type your task to begin · /help for commands · /quit to exit[/hint]"
+        "[hint]type your task to begin · /help for commands · /bg <cmd> for background · /quit to exit[/hint]"
     )
     console.print(Rule(style="brand.dim"))
 
@@ -166,7 +182,7 @@ def render_footer(console: Console, session: Session) -> None:
     """A persistent-feeling status line printed at the end of each turn."""
     pct = session.budget_used_pct() * 100.0
     style = "cost.under" if pct < 60 else ("cost.warn" if pct < 90 else "cost.over")
-    line = Text.assemble(
+    pieces: list[tuple[str, str]] = [
         ("model ", "meta"),
         (f"{session.provider}/{session.model}", "brand"),
         ("  ·  ", "meta"),
@@ -179,9 +195,44 @@ def render_footer(console: Console, session: Session) -> None:
         ("  ·  ", "meta"),
         ("turns ", "meta"),
         (f"{len(session.history)}", "brand"),
-    )
-    console.print(line)
+    ]
+    # Add a background-task indicator if any are running.
+    try:
+        from . import _background as bg
+
+        running = bg.current_manager().running_count()
+        if running:
+            pieces.extend([
+                ("  ·  ", "meta"),
+                ("bg ", "meta"),
+                (f"{running} running", "warn"),
+            ])
+    except Exception:  # noqa: BLE001 - footer never crashes
+        pass
+    console.print(Text.assemble(*pieces))
     console.print(Rule(style="brand.dim"))
+
+
+def drain_background_notices(console: Console) -> None:
+    """Print one inline notice per completed background task. Called at the
+    top of each REPL prompt so the user sees finishes between turns."""
+    try:
+        from . import _background as bg
+
+        notices = bg.current_manager().drain_notices()
+    except Exception:  # noqa: BLE001
+        return
+    for task in notices:
+        style = {
+            "done": "ok", "failed": "err", "killed": "err", "running": "warn",
+        }.get(task.status, "meta")
+        line = (
+            f"[meta][bg][/meta] [brand][{task.id}][/brand] "
+            f"[key]{task.name[:50]}[/key] → [{style}]{task.status}[/{style}]"
+        )
+        if task.exit_code is not None:
+            line += f" [meta](exit {task.exit_code}, {task.elapsed_seconds:.1f}s)[/meta]"
+        console.print(line)
 
 
 # ---------- prompts ----------

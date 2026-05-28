@@ -416,6 +416,9 @@ def repl(console, session: Session) -> None:
     """The main interactive loop."""
     _tools.bind_tools(session.cwd)
     while True:
+        # Show any background-task completion notices first so the user
+        # sees long-running commands finish between turns.
+        _ui.drain_background_notices(console)
         try:
             line = _ui.prompt_input(console)
         except KeyboardInterrupt:
@@ -424,13 +427,17 @@ def repl(console, session: Session) -> None:
             continue
         cmd_result = dispatch_command(console, session, line)
         if cmd_result == "quit":
+            from ._background import shutdown_manager
+            from ._commands import _resolve_sessions_dir
             from ._session import save_session
 
             try:
-                path = save_session(session)
+                sd = _resolve_sessions_dir(session)
+                path = save_session(session, sessions_dir=sd)
                 console.print(f"[meta]session saved to {path}[/meta]")
             except OSError as e:
                 console.print(f"[warn]could not save session: {e}[/warn]")
+            shutdown_manager()  # kill non-detached background tasks
             console.print("[brand]bye.[/brand]")
             return
         if cmd_result is not None:
