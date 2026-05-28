@@ -136,6 +136,29 @@ def _record_phase_usage(turn: TaskTurn, session: Session, usage: Usage) -> None:
     turn.cost_usd += estimate_cost_usd(session.provider, session.model, usage)
 
 
+class _BudgetExceeded(RuntimeError):
+    """Raised when a turn's projected spend would cross the session budget."""
+
+
+def _check_budget(console, session: Session, turn: TaskTurn) -> bool:
+    """Return False (and print a warning) if the budget cap is enforced and
+    we're past it. The agent will skip the next phase."""
+    if not session.budget_usd:
+        return True
+    if session.total_cost_usd + turn.cost_usd > session.budget_usd:
+        console.print(
+            f"[cost.over]budget cap reached "
+            f"(${session.total_cost_usd + turn.cost_usd:.4f} > "
+            f"${session.budget_usd:.2f}); halting this turn.[/cost.over]"
+        )
+        console.print(
+            "[hint]raise it with `/budget <new>` and re-run the task, "
+            "or switch to a cheaper model with `/model`.[/hint]"
+        )
+        return False
+    return True
+
+
 def _build_context(
     task: str, *, session: Session, cwd: Path, console
 ) -> tuple[Context, list[str], str]:
@@ -572,6 +595,12 @@ def run_turn(console, session: Session, task: str) -> None:
     turn.plan = r.plan
     turn.tradeoffs = r.tradeoffs
     turn.verdict = r.verdict
+
+    # 2a. Budget check before the draft phase.
+    if not _check_budget(console, session, turn):
+        session.record(turn)
+        _ui.render_footer(console, session)
+        return
 
     # 2. Plan approval
     choice = _ui.prompt_approve_plan(console)

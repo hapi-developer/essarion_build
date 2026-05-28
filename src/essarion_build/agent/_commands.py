@@ -26,7 +26,7 @@ CommandResult = str  # "continue" | "quit"
 
 
 _HELP_GROUPS: list[tuple[str, list[str]]] = [
-    ("session", ["/whoami", "/history", "/save", "/load", "/export", "/clear", "/version", "/quit"]),
+    ("session", ["/whoami", "/history", "/summary", "/save", "/load", "/export", "/clear", "/version", "/quit"]),
     ("planning", ["/ask"]),
     ("workflows", ["/review", "/fix", "/tests", "/refactor", "/docs", "/security", "/perf", "/explain", "/pr"]),
     ("models & cost", ["/model", "/escalate", "/budget", "/cost", "/stream"]),
@@ -524,6 +524,52 @@ def _cmd_cost(console: Console, session: Session, args: str) -> CommandResult:
     return "continue"
 
 
+def _cmd_summary(console: Console, session: Session, args: str) -> CommandResult:
+    """One-paragraph summary of what the agent did this session.
+
+    Useful as a basis for a commit message or a PR description.
+    """
+    from rich.panel import Panel
+
+    if not session.history:
+        console.print("[meta](no turns this session)[/meta]")
+        return "continue"
+
+    from ._changes import current_changelog
+
+    log = current_changelog()
+    lines = [
+        f"Session {session.id} ({len(session.history)} turn(s)):",
+        "",
+    ]
+    for i, turn in enumerate(session.history, 1):
+        first_plan = (turn.plan or turn.verdict or "(no plan)").splitlines()
+        head = (first_plan[0] if first_plan else "(no plan)").lstrip("- 0123456789.").strip()
+        lines.append(f"  {i}. {turn.task[:80]}")
+        if head:
+            lines.append(f"     plan: {head[:120]}")
+        if turn.files_touched:
+            lines.append(f"     files: {', '.join(turn.files_touched)}")
+    files = log.files_touched()
+    if files:
+        lines.append("")
+        lines.append(f"files touched: {', '.join(files)}")
+    lines.append("")
+    lines.append(
+        f"total: {session.total_usage.total_tokens:,} tokens · "
+        f"${session.total_cost_usd:.4f}"
+    )
+    console.print(
+        Panel(
+            "\n".join(lines),
+            title="[brand]session summary[/brand]",
+            border_style="brand",
+            padding=(0, 1),
+        )
+    )
+    return "continue"
+
+
 def _cmd_whoami(console: Console, session: Session, args: str) -> CommandResult:
     """One-screen status: project + model + memory + sessions dir."""
     from rich.table import Table
@@ -797,6 +843,7 @@ COMMANDS: dict[str, tuple[Callable, str]] = {
     "/cost": (_cmd_cost, "show session cost ledger or estimate against a path"),
     "/stream": (_cmd_stream, "toggle streamed draft output (token-by-token)"),
     "/whoami": (_cmd_whoami, "one-screen status: project + model + memory + budget"),
+    "/summary": (_cmd_summary, "one-paragraph summary of this session — useful for commits/PRs"),
     "/review": (_workflow_command("review"), "shortcut: workflows.review(<target>)"),
     "/fix": (_workflow_command("fix"), "shortcut: workflows.fix_bug(<target>)"),
     "/tests": (_workflow_command("tests"), "shortcut: workflows.write_tests(<target>)"),

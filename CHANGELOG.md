@@ -14,6 +14,65 @@ The big "SDK + CLI coding agent" release. v0.2 was a focused
 full toolkit AND ships a `essarion` CLI coding agent on top — all via
 `pip install essarion-build`.
 
+### Added — agent: planning UX
+
+- **Pre-flight cost prediction.** Each turn prints a projected USD cost
+  before the plan call so the user sees the spend before paying.
+- **`/cost`** session ledger (per-turn + total), or `/cost <path>` to
+  estimate against a hypothetical context loading that path.
+- **`/whoami`** one-screen status: project + sessions dir + model +
+  skills mode + budget + memory facts + bg tasks running.
+- **`/stream [on|off]`** toggles streamed draft output (token-by-token
+  via `stream_generate`). Buffered phases stay buffered; the draft
+  shows code as it's written.
+- **`/ask <question>`** runs `reason()` only — quick Q&A without paying
+  for a draft.
+- **Categorized `/help`.** Commands grouped by area (session, planning,
+  workflows, models & cost, skills & memory, project & files, changes
+  & verify, background, safety). `/help <substring>` filters.
+
+### Added — agent: project memory
+
+- `<project>/.essarion/memory.md` auto-injected into every turn as a
+  `memory` custom skill.
+- `/remember <fact>` appends; `/remember` alone prints current memory.
+- `/forget <pattern>` removes matching facts; `/forget all` wipes.
+- Per-project; falls back to `~/.essarion/memory.md` outside a project.
+
+### Added — agent: verification + change tracking
+
+- `/verify [cmd]` runs the project's check command (auto-detects pytest /
+  npm test / cargo test / go test / make test, or reads
+  `[verify].check_cmd` from project config).
+- `[verify].auto = true` in `.essarion/config.toml` makes the agent
+  auto-run the check after every applied change. Failures surface PASS
+  / FAIL inline with the output panel.
+- `/diff` shows a unified diff of every file the agent changed this
+  session (multiple edits to the same file collapse into the net diff).
+- `/undo` reverts the most recent change (create → delete, modify →
+  restore prior content).
+- `/commit [msg]` git-adds touched files and creates a commit.
+
+### Added — agent: inline tool execution during the plan phase
+
+- The model can emit `<tool_call name="...">...</tool_call>` inside its
+  plan. The agent runs read-only tools (read_file, grep, glob,
+  list_dir, find_files), folds the results back as context notes, and
+  re-plans. Up to 3 rounds.
+- Side-effect tools (write_file, run_shell, apply_diff, start_background,
+  kill_background) are blocked from inline execution — those keep going
+  through the user-approved apply step.
+- A short manifest is injected into every turn so the model knows what
+  syntax to use.
+
+### Added — agent: workflow shortcuts
+
+- `/review`, `/fix`, `/tests`, `/refactor`, `/docs`, `/security`,
+  `/perf`, `/explain`, `/pr` route to the matching `workflows.*`
+  function.
+- Custom commands: drop `<name>.md` in `<project>/.essarion/commands/`
+  to create `/<name>` with `{args}` substitution.
+
 ### Added — agent: project folders
 - `essarion init [<path>]` creates `<path>/.essarion/` with starter
   `config.toml`, per-project `sessions/` directory, and a `.gitignore`

@@ -68,19 +68,39 @@ you: review src/auth.py for JWT alg=none confusion
 1. **Plan-first interactivity.** You see the plan and verdict BEFORE the
    draft is paid for. Edit it, reject it, or send it back. No other agent
    does this — most jump straight to writing code.
-2. **Live token-budget meter.** Every session has a configurable USD
-   budget. The footer shows what you've spent in real time. Lets you SEE
-   the savings of cheap-model amplification.
+2. **Live token-budget meter + projected cost.** Every session has a
+   configurable USD budget. Before each turn the agent prints a projected
+   cost based on your current context size. After each turn you see the
+   actual spend. `/cost <path>` lets you estimate against a hypothetical
+   context before sending it.
 3. **Smart skill selection.** The 54 bundled skills aren't all loaded
    every turn — a fast keyword picker chooses the 3-5 most relevant
    ones. Big context savings on every call.
 4. **Multi-model arbitrage.** Plan + selfcheck on a cheap model;
    `--escalate <bigger-model>` only kicks in if selfcheck rejects.
    Cheap by default, smart when it matters.
-5. **Reasoning-trace persistence.** Every session saved to
-   `~/.essarion/sessions/`. Replay, fork, share with a teammate.
-6. **The whole SDK is yours.** Anything you can do in the agent, you can
-   do in code — same `reason()`, `generate()`, `Conversation` calls.
+5. **Project-aware.** `essarion init` creates `.essarion/{config.toml,
+   sessions/, memory.md}` per repo. The agent auto-detects the project
+   root from `.essarion/`, `.git/`, `pyproject.toml`, etc. Per-project
+   memory (`/remember <fact>`) and config flow into every turn.
+6. **Inline tool execution during planning.** The model can emit
+   `<tool_call name="read_file">…</tool_call>` inside its plan; the agent
+   runs the read-only tool (read_file, grep, glob, list_dir, find_files),
+   folds the result back as a note, and re-plans. Up to 3 rounds. No
+   user friction.
+7. **Background tasks.** `/bg npm run dev` runs in parallel. The agent
+   keeps working; completion notices fire between turns. /quit cleanly
+   kills non-detached tasks via SIGTERM → SIGKILL on the process group.
+8. **Streamed draft output.** `/stream on` shows code as it's written,
+   token by token.
+9. **Auto-verify + undo.** Configure `[verify].auto=true` and the agent
+   runs your test suite after every applied change. If it fails, `/undo`
+   reverts the last change.
+10. **Reasoning-trace persistence.** Every session saved to
+    `<project>/.essarion/sessions/` (or `~/.essarion/sessions/`). Replay
+    with `essarion --resume <id>`.
+11. **The whole SDK is yours.** Anything you can do in the agent, you can
+    do in code — same `reason()`, `generate()`, `Conversation` calls.
 
 ### Quick commands
 
@@ -161,20 +181,74 @@ group, so dev-server children die too).
 
 ### Slash commands (inside the REPL)
 
+Type `/help` inside the agent for the categorized view. The headline ones:
+
+**session**
+
 | Command | Description |
 |---|---|
-| `/help` | show all commands |
-| `/budget [N]` | show or set USD budget |
+| `/whoami` | one-screen status: project + model + memory + budget + bg tasks |
+| `/history` | list this session's turns |
+| `/save` / `/load` | persist / list saved sessions |
+| `/quit` | exit (saves; kills non-detached bg tasks) |
+
+**planning & workflows**
+
+| Command | Description |
+|---|---|
+| `/ask <q>` | quick `reason()` only, no draft phase (Q&A) |
+| `/review <target>` | shortcut: `workflows.review(<target>)` |
+| `/fix <bug>` / `/tests <target>` / `/refactor <target>` | other workflows |
+| `/security <target>` / `/perf <target>` | security / performance review |
+| `/docs <target>` / `/pr <target>` / `/explain <target>` | docs, PR description, code explanation |
+
+**models & cost**
+
+| Command | Description |
+|---|---|
 | `/model <p>/<m>` | switch provider/model mid-session |
 | `/escalate <m>` | set escalation model (cheap → strong on reject) |
+| `/budget [N]` | show or set USD budget |
+| `/cost` | session cost ledger (per turn + total) |
+| `/cost <path>` | estimate the cost of a turn against a path/dir |
+| `/stream [on\|off]` | toggle streamed draft output (token-by-token) |
+
+**skills & memory**
+
+| Command | Description |
+|---|---|
 | `/skills [auto\|all\|none]` | switch picker mode |
+| `/remember <fact>` | append to `.essarion/memory.md` (per-project) |
+| `/forget <pattern>` | remove facts matching a substring |
+
+**project & files**
+
+| Command | Description |
+|---|---|
 | `/cd <path>` | change sandbox directory |
-| `/history` | list this session's turns |
-| `/save` | persist session (per-project or `~`) |
-| `/load` | list saved sessions |
-| `/bg [...]` | manage background tasks |
+| `/pwd` | print sandbox cwd |
+
+**changes & verify**
+
+| Command | Description |
+|---|---|
+| `/diff` | unified diff of every change this session |
+| `/undo` | revert the most recent agent-applied change |
+| `/commit [msg]` | git-commit the session's touched files |
+| `/verify [cmd]` | run the project's check command (tests/lint) |
+
+**background**
+
+| Command | Description |
+|---|---|
+| `/bg <cmd>` | start a background shell command |
+| `/bg [show\|wait\|kill\|clear] <id>` | manage tasks |
+
+**safety**
+
+| Command | Description |
+|---|---|
 | `/yolo` | toggle auto-approval of side-effect tools |
-| `/quit` | exit (also saves, kills non-detached bg tasks) |
 
 ## Install
 
