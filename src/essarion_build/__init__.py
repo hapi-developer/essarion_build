@@ -27,6 +27,7 @@ from ._async_providers import (
 )
 from ._async_runtime import AsyncLiteRuntime, AsyncRuntime, select_async_runtime
 from ._cache import CachingProvider, ResponseCache
+from ._compaction import compact, keep_only_files, truncate_files
 from ._config import configure
 from ._context import Context, Diff
 from ._conversation import Conversation, ConversationTurn
@@ -117,6 +118,10 @@ __all__ = [
     # Cache
     "ResponseCache",
     "CachingProvider",
+    # Compaction
+    "compact",
+    "truncate_files",
+    "keep_only_files",
     # Telemetry
     "configure_telemetry",
     "TelemetryCallback",
