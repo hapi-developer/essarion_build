@@ -113,6 +113,10 @@ EXPECTED_SKILLS = {
     "networking",
     "containers",
     "distributed_systems",
+    "ml_engineering",
+    "web_security",
+    "build_systems",
+    "code_search",
 }
 
 

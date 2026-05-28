@@ -48,7 +48,7 @@ from essarion_build import Context, reason, generate
 
 ctx = (
     Context()
-      .with_all_skills()                 # 46 bundled coding-practice skills
+      .with_all_skills()                 # 50 bundled coding-practice skills
       .add_repo("./")                    # ground in your codebase
       .add_docs("https://datatracker.ietf.org/doc/html/rfc7519")
 )
