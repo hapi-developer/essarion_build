@@ -41,6 +41,7 @@ test = [
 
 [project.scripts]
 essarion-build = "essarion_build.cli:main"
+essarion = "essarion_build.cli:main"
 
 [project.urls]
 Homepage = "https://essarion.com"
