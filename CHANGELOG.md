@@ -7,6 +7,86 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-05-28
+
+The "essarion CLI coding agent" release. v0.3 made `essarion-build` a
+serious SDK; v0.4 turns it into a fully-featured CLI coding agent
+without losing any of the SDK surface. Everything is `pip install
+essarion-build`.
+
+### Added — `essarion` CLI coding agent
+
+A new module, `essarion_build.agent`, ships an interactive coding agent
+on top of the SDK. Bare `essarion` launches the REPL; `essarion
+<subcmd>` falls through to the existing CLI subcommands.
+
+Differentiators vs Claude Code / Codex / Aider / Cursor:
+
+- **Plan-first interactivity.** The SDK's `reason()` runs first; the
+  user sees the plan in a panel and can approve / edit / cancel
+  *before* any code-generation call is paid for.
+- **Live token-budget meter.** Per-session USD budget; live cost
+  readout in the footer; per-turn cost line. Makes the
+  amplification-savings story visible.
+- **Smart skill selection.** A tiny keyword-based picker chooses 3-5
+  relevant skills out of 54 instead of loading them all. Big context
+  savings.
+- **Multi-model arbitrage.** `--escalate <bigger-model>` makes the
+  agent retry with a stronger model only when the cheap-model
+  selfcheck rejects the draft.
+- **Reasoning-trace persistence.** Sessions saved to
+  `~/.essarion/sessions/{id}.json`. Replay with `essarion --resume <id>`.
+- **Workflow-prefixed shortcuts.** `review: src/auth.py`,
+  `fix-bug: payment hangs`, `tests: parse_jwt`, `refactor: …`, `docs:
+  …`, `security-review: …`, `perf-review: …`, `pr-description: …`,
+  `explain: …` route to the matching `workflows.*` function.
+
+Visual polish via `rich`: panels, syntax-highlighted code, live status
+spinners, color-coded phase headers (plan = magenta, draft = cyan,
+selfcheck = yellow), persistent footer with model + budget + token +
+turn counts.
+
+Slash commands inside the REPL: `/help`, `/quit`, `/clear`,
+`/budget [N]`, `/model <p>/<m>`, `/escalate <m>`, `/skills
+[auto|all|none]`, `/cd <path>`, `/pwd`, `/history`, `/save`, `/load`,
+`/export`, `/yolo`, `/version`.
+
+CLI flags: `--task`, `--cwd`, `--budget`, `--provider`, `--model`,
+`--escalate`, `--skills {auto,all,none}`, `--resume <id>`,
+`--max-tokens`.
+
+### Added — agent sub-modules
+
+- `essarion_build.agent._loop` — the plan-first turn loop (uses
+  `reason()` + `generate()` + `workflows.*` from the SDK)
+- `essarion_build.agent._session` — Session state, TaskTurn,
+  `estimate_cost_usd()`, persistence to `~/.essarion/sessions/`
+- `essarion_build.agent._skill_picker` — keyword-based skill selection
+- `essarion_build.agent._tools` — sandboxed file/grep/shell tools
+  (read_file, list_dir, grep, write_file, apply_diff, run_shell)
+- `essarion_build.agent._ui` — rich-based panels, prompts, footer
+- `essarion_build.agent._commands` — slash-command dispatcher
+- `essarion_build.agent._theme` — color theme + ASCII banner
+- `essarion_build.agent.main` — entry point + top-level dispatcher
+
+### Added — `essarion` console script
+
+A new entry point in `pyproject.toml`: `essarion =
+essarion_build.agent.main:main_or_subcommand`. Bare `essarion` runs
+the agent REPL; `essarion <subcmd>` (skills / providers / workflows /
+version / estimate / reason / generate) passes through to the existing
+`essarion-build` CLI.
+
+The `essarion-build` console script is preserved unchanged.
+
+### Added — dependencies
+- `rich>=13.7` (TUI, syntax highlighting, panels, progress)
+
+### Tests
+- Suite grew from 229 to 284 cases. New files: `test_agent_skill_picker.py`,
+  `test_agent_tools.py`, `test_agent_session.py`, `test_agent_loop.py`,
+  `test_agent_commands.py`, `test_agent_main.py`.
+
 ## [0.3.0] - 2026-05-28
 
 The big-SDK release. v0.2 was a focused `reason()`/`generate()` primitive;
@@ -183,6 +263,7 @@ surface; existing v0.2 code keeps working.
 ### Tests
 - Suite grew from 26 to 42 cases. Added coverage for tag repair (happy path, failed repair, no-repair-needed), usage arithmetic and aggregation, per-call `max_tokens` override, and HTTP error mapping / retry behavior via `httpx.MockTransport`.
 
-[Unreleased]: https://github.com/hapi-developer/essarion_build/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/hapi-developer/essarion_build/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/hapi-developer/essarion_build/releases/tag/v0.4.0
 [0.3.0]: https://github.com/hapi-developer/essarion_build/releases/tag/v0.3.0
 [0.2.0]: https://github.com/hapi-developer/essarion_build/releases/tag/v0.2.0

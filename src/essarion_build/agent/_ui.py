@@ -1,0 +1,226 @@
+"""Rich-based UI primitives for the agent REPL.
+
+Kept thin — the loop owns the control flow; this module just renders.
+Functions here take a `Console`, not a global singleton, so tests can
+construct a Console(record=True) and assert on the rendered output.
+"""
+
+from __future__ import annotations
+
+from typing import Iterable
+
+from rich.console import Console, Group
+from rich.markdown import Markdown
+from rich.panel import Panel
+from rich.prompt import Prompt
+from rich.rule import Rule
+from rich.syntax import Syntax
+from rich.table import Table
+from rich.text import Text
+
+from ._session import Session
+from ._theme import BANNER, ESSARION_THEME, TAGLINE
+
+
+def make_console() -> Console:
+    """Create a Console wired to the Essarion theme."""
+    return Console(theme=ESSARION_THEME, highlight=False)
+
+
+def show_banner(console: Console, session: Session, skill_count: int) -> None:
+    """The welcome screen — shown once at REPL start."""
+    console.print(BANNER)
+    console.print(TAGLINE)
+    console.print()
+    table = Table.grid(padding=(0, 2))
+    table.add_column(style="meta", justify="right")
+    table.add_column()
+    table.add_row("session", session.id)
+    table.add_row("cwd", session.cwd)
+    table.add_row("model", f"{session.provider}/[brand]{session.model}[/brand]")
+    if session.escalate_model:
+        table.add_row("escalate", f"{session.provider}/[brand]{session.escalate_model}[/brand]")
+    table.add_row("budget", f"$0.000 / [brand]${session.budget_usd:.2f}[/brand]")
+    table.add_row("skills", f"{skill_count} bundled, picker mode [brand]{session.skills_mode}[/brand]")
+    console.print(table)
+    console.print()
+    console.print(
+        "[hint]type your task to begin · /help for commands · /quit to exit[/hint]"
+    )
+    console.print(Rule(style="brand.dim"))
+
+
+def render_phase_header(console: Console, phase: str) -> None:
+    """A small rule + label between phases."""
+    label = {
+        "plan": "[phase.plan]── plan ──[/phase.plan]",
+        "draft": "[phase.draft]── draft ──[/phase.draft]",
+        "selfcheck": "[phase.selfcheck]── selfcheck ──[/phase.selfcheck]",
+    }.get(phase, phase)
+    console.print(label)
+
+
+def render_plan(console: Console, plan: str, tradeoffs: str, verdict: str) -> None:
+    """The plan panel — what the user sees BEFORE any code is paid for."""
+    body = Group(
+        Text.from_markup("[phase.plan]plan[/phase.plan]"),
+        Markdown(plan or "(no plan)"),
+        Text(""),
+        Text.from_markup("[phase.plan]tradeoffs[/phase.plan]"),
+        Markdown(tradeoffs or "(no tradeoffs)"),
+        Text(""),
+        Text.from_markup("[phase.plan]verdict[/phase.plan]"),
+        Markdown(verdict or "(no verdict)"),
+    )
+    console.print(Panel(body, border_style="brand", padding=(1, 2)))
+
+
+def render_code(console: Console, code: str, *, language: str = "python") -> None:
+    """Syntax-highlighted code block."""
+    if not code.strip():
+        console.print("[warn](no code produced)[/warn]")
+        return
+    console.print(
+        Panel(
+            Syntax(code, language, theme="ansi_dark", line_numbers=False),
+            title=f"[phase.draft]code[/phase.draft]",
+            border_style="phase.draft",
+            padding=(0, 1),
+        )
+    )
+
+
+def render_defense(console: Console, defense: str) -> None:
+    if not defense.strip():
+        return
+    console.print(
+        Panel(
+            Markdown(defense),
+            title="[phase.selfcheck]defense[/phase.selfcheck]",
+            border_style="phase.selfcheck",
+            padding=(0, 1),
+        )
+    )
+
+
+def render_diff(console: Console, diff_text: str) -> None:
+    """Render a unified diff with green/red coloring."""
+    lines: list[Text] = []
+    for line in diff_text.splitlines():
+        if line.startswith("+++") or line.startswith("---"):
+            lines.append(Text(line, style="meta"))
+        elif line.startswith("+"):
+            lines.append(Text(line, style="diff.add"))
+        elif line.startswith("-"):
+            lines.append(Text(line, style="diff.remove"))
+        elif line.startswith("@@"):
+            lines.append(Text(line, style="diff.hunk"))
+        else:
+            lines.append(Text(line))
+    console.print(
+        Panel(
+            Group(*lines),
+            title="[phase.draft]diff[/phase.draft]",
+            border_style="phase.draft",
+            padding=(0, 1),
+        )
+    )
+
+
+def render_skills_picked(console: Console, picks: list[str], reason: str = "") -> None:
+    """One-line summary of which skills the picker loaded."""
+    if not picks:
+        console.print("[meta]no skills loaded for this turn[/meta]")
+        return
+    skill_chips = " ".join(f"[skill]{p}[/skill]" for p in picks)
+    console.print(f"[meta]skills:[/meta] {skill_chips}")
+    if reason:
+        console.print(f"[hint]why: {reason}[/hint]")
+
+
+def render_tool_run(console: Console, tool: str, args: dict, result: str, ok: bool) -> None:
+    """A small block for one tool invocation (read_file, grep, …)."""
+    arg_repr = ", ".join(f"{k}={v!r}" for k, v in args.items())
+    head = f"[brand]→[/brand] [key]{tool}[/key]([meta]{arg_repr}[/meta])"
+    status = "[ok]✓[/ok]" if ok else "[err]✗[/err]"
+    snippet = result if len(result) < 600 else result[:600] + "\n... (truncated)"
+    console.print(f"{head} {status}")
+    if snippet.strip():
+        console.print(Panel(snippet, border_style="meta", padding=(0, 1)))
+
+
+def render_usage_line(
+    console: Console, *, label: str, usage_total: int, cost_usd: float, budget_usd: float
+) -> None:
+    """One-line summary at the end of a turn."""
+    pct = min(100.0, (cost_usd / budget_usd * 100.0) if budget_usd > 0 else 0.0)
+    style = "cost.under" if pct < 60 else ("cost.warn" if pct < 90 else "cost.over")
+    console.print(
+        f"[meta]{label}[/meta] [meta]{usage_total:,} tokens · "
+        f"[/meta][{style}]${cost_usd:.4f}[/{style}]"
+        f"[meta] of ${budget_usd:.2f}[/meta]"
+    )
+
+
+def render_footer(console: Console, session: Session) -> None:
+    """A persistent-feeling status line printed at the end of each turn."""
+    pct = session.budget_used_pct() * 100.0
+    style = "cost.under" if pct < 60 else ("cost.warn" if pct < 90 else "cost.over")
+    line = Text.assemble(
+        ("model ", "meta"),
+        (f"{session.provider}/{session.model}", "brand"),
+        ("  ·  ", "meta"),
+        ("budget ", "meta"),
+        (f"${session.total_cost_usd:.4f}", style),
+        (f" / ${session.budget_usd:.2f}", "meta"),
+        ("  ·  ", "meta"),
+        ("tokens ", "meta"),
+        (f"{session.total_usage.total_tokens:,}", "brand"),
+        ("  ·  ", "meta"),
+        ("turns ", "meta"),
+        (f"{len(session.history)}", "brand"),
+    )
+    console.print(line)
+    console.print(Rule(style="brand.dim"))
+
+
+# ---------- prompts ----------
+
+def prompt_input(console: Console) -> str:
+    """The user-input prompt at the top of each turn."""
+    try:
+        return Prompt.ask("[you]you[/you]", console=console).strip()
+    except (EOFError, KeyboardInterrupt):
+        return "/quit"
+
+
+def prompt_approve_plan(console: Console) -> str:
+    """After showing the plan, ask the user what to do. Returns one of:
+    "approve", "edit", "skip", "cancel"."""
+    raw = Prompt.ask(
+        "[brand]approve plan?[/brand] [hint](Enter=approve, e=edit, s=skip-to-draft, c=cancel)[/hint]",
+        choices=["", "e", "s", "c"],
+        default="",
+        show_choices=False,
+        show_default=False,
+        console=console,
+    )
+    return {"": "approve", "e": "edit", "s": "skip", "c": "cancel"}[raw]
+
+
+def prompt_approve_apply(console: Console, *, kind: str = "code") -> str:
+    """After showing the code/diff, ask whether to apply. Returns one of:
+    "apply", "save", "discard"."""
+    raw = Prompt.ask(
+        f"[brand]apply {kind}?[/brand] [hint](a=apply-to-disk, s=save-as-file, Enter=discard)[/hint]",
+        choices=["", "a", "s"],
+        default="",
+        show_choices=False,
+        show_default=False,
+        console=console,
+    )
+    return {"": "discard", "a": "apply", "s": "save"}[raw]
+
+
+def prompt_text(console: Console, prompt: str, *, default: str = "") -> str:
+    return Prompt.ask(prompt, default=default, console=console).strip()

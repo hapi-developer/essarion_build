@@ -1,8 +1,8 @@
 # essarion-build
 
-A **BYOK reasoning amplification SDK** for AI-assisted coding. Bring your own model provider; `essarion_build` provides the reasoning loop, the grounding context, the bundled software-development skills, and the structured outputs.
+A **BYOK reasoning amplification SDK + CLI coding agent**, by Essarion. Bring your own model provider; `essarion-build` provides the reasoning loop, the grounding context, the bundled software-development skills, and the structured outputs. The CLI agent gives you an interactive, plan-first coding experience powered by the same SDK.
 
-`essarion_build` is not a wrapper for any single LLM. It is a deliberate **plan → draft → self-check** pipeline that turns *whatever model you wire in* into a more thoughtful coder. The default is tuned to amplify **cheap** models — making a small, fast GPT reason about coding the way a senior engineer would.
+`essarion-build` is not a wrapper for any single LLM. It is a deliberate **plan → draft → self-check** pipeline that turns *whatever model you wire in* into a more thoughtful coder. The default is tuned to amplify **cheap** models — making a small, fast GPT reason about coding the way a senior engineer would, while spending a fraction of the tokens of a single-shot generation from a bigger model.
 
 ```text
                 ┌──────────────────────────────────────────┐
@@ -19,6 +19,101 @@ A **BYOK reasoning amplification SDK** for AI-assisted coding. Bring your own mo
                   OpenRouter · Anthropic · OpenAI · Gemini
                        Ollama (local) · custom
 ```
+
+## The `essarion` CLI coding agent
+
+Type `essarion` to launch the interactive coding agent. It uses the same SDK
+under the hood — the agent IS the SDK, dressed in a TUI:
+
+```bash
+$ essarion
+
+  essarion build · CLI coding agent
+  by Essarion · amplifies any LLM with senior-engineer reasoning
+
+  session   20260528-195838-5e4b
+  cwd       /home/you/work/myproject
+  model     openrouter/openai/gpt-4o-mini
+  budget    $0.000 / $1.00
+  skills    54 bundled, picker mode auto
+
+  type your task to begin · /help for commands · /quit to exit
+  ────────────────────────────────────────────────────────────
+
+you: review src/auth.py for JWT alg=none confusion
+
+  skills: auth_security web_security secure_coding scope_discipline error_handling
+  auto-loaded: src/auth.py
+
+  ── plan ──
+  ┌──────────────────────────────────────────────────────────────┐
+  │ plan                                                         │
+  │  1. Verify the JWT lib's alg=none handling                   │
+  │  2. Add an explicit allow-list of allowed algorithms         │
+  │  3. Reject tokens whose alg header is missing                │
+  │                                                              │
+  │ tradeoffs                                                    │
+  │  • chosen: whitelist (HS256 only) — closes alg=none family   │
+  │  • rejected: blacklist — every new algorithm becomes risky   │
+  │                                                              │
+  │ verdict                                                      │
+  │  do not ship without resolving step 2                        │
+  └──────────────────────────────────────────────────────────────┘
+
+  approve plan? (Enter=approve, e=edit, s=skip-to-draft, c=cancel) _
+```
+
+### Why use the agent (over Claude Code / Codex / Aider / Cursor)
+
+1. **Plan-first interactivity.** You see the plan and verdict BEFORE the
+   draft is paid for. Edit it, reject it, or send it back. No other agent
+   does this — most jump straight to writing code.
+2. **Live token-budget meter.** Every session has a configurable USD
+   budget. The footer shows what you've spent in real time. Lets you SEE
+   the savings of cheap-model amplification.
+3. **Smart skill selection.** The 54 bundled skills aren't all loaded
+   every turn — a fast keyword picker chooses the 3-5 most relevant
+   ones. Big context savings on every call.
+4. **Multi-model arbitrage.** Plan + selfcheck on a cheap model;
+   `--escalate <bigger-model>` only kicks in if selfcheck rejects.
+   Cheap by default, smart when it matters.
+5. **Reasoning-trace persistence.** Every session saved to
+   `~/.essarion/sessions/`. Replay, fork, share with a teammate.
+6. **The whole SDK is yours.** Anything you can do in the agent, you can
+   do in code — same `reason()`, `generate()`, `Conversation` calls.
+
+### Quick commands
+
+```bash
+essarion                                  # interactive REPL
+essarion --task "review src/auth.py"      # one-shot non-interactive
+essarion --provider anthropic --model claude-sonnet-4-6
+essarion --budget 5.00 --escalate claude-sonnet-4-6   # cheap+escalate
+essarion --resume 20260528-195838-5e4b    # continue a saved session
+essarion --skills all                     # load every skill (vs auto)
+
+# Subcommands fall through to the original CLI
+essarion skills                           # list bundled skills
+essarion providers
+essarion reason "task" --json
+essarion generate "task" --stream
+```
+
+### Slash commands (inside the REPL)
+
+| Command | Description |
+|---|---|
+| `/help` | show all commands |
+| `/budget [N]` | show or set USD budget |
+| `/model <p>/<m>` | switch provider/model mid-session |
+| `/escalate <m>` | set escalation model (cheap → strong on reject) |
+| `/skills [auto\|all\|none]` | switch picker mode |
+| `/cd <path>` | change sandbox directory |
+| `/history` | list this session's turns |
+| `/save` | persist session to `~/.essarion/sessions/` |
+| `/load` | list saved sessions |
+| `/yolo` | toggle auto-approval of side-effect tools |
+| `/quit` | exit (also saves) |
 
 ## Install
 

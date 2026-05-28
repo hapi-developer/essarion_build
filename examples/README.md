@@ -17,6 +17,7 @@ export OPENROUTER_API_KEY=sk-or-...
 | 6 | [`06_telemetry.py`](06_telemetry.py) | Pipe SDK events into your observability stack |
 | 7 | [`07_custom_provider.py`](07_custom_provider.py) | Register and use a custom provider (no key required) |
 | 8 | [`08_cache.py`](08_cache.py) | Skip duplicate provider calls with `ResponseCache` |
+| 9 | [`09_agent_programmatic.py`](09_agent_programmatic.py) | Drive the `essarion` CLI agent's plan-first loop from Python |
 
 Run any of them with `python examples/01_quick_start.py`.
 
