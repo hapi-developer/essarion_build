@@ -57,6 +57,7 @@ def session(tmp_path: Path) -> Session:
         provider="stub",
         model="stub-model",
         budget_usd=1.00,
+        effort="standard",  # deterministic call count for these mechanics tests
     )
 
 

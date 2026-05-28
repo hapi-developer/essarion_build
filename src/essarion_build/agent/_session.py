@@ -66,6 +66,7 @@ class TaskTurn(BaseModel):
     usage: Usage = Field(default_factory=Usage)
     cost_usd: float = 0.0
     escalated: bool = False
+    effort: str = ""  # the reasoning depth actually used this turn
     ts_start: float = Field(default_factory=time.time)
     ts_end: float = 0.0
 
@@ -82,6 +83,10 @@ class Session(BaseModel):
     max_tokens: int = 4096
     budget_usd: float = 1.00
     skills_mode: str = "auto"  # "auto" | "all" | "none"
+    # Reasoning depth. The agent defaults to "auto" — a tiny triage call
+    # sizes each task and routes to quick/standard/deep. Cheap on easy
+    # tasks, deep only when warranted.
+    effort: str = "auto"  # "quick" | "standard" | "deep" | "max" | "auto"
     history: list[TaskTurn] = Field(default_factory=list)
     total_usage: Usage = Field(default_factory=Usage)
     total_cost_usd: float = 0.0

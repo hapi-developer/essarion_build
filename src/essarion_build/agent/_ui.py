@@ -58,6 +58,14 @@ def show_banner(
         table.add_row("escalate", f"{session.provider}/[brand]{session.escalate_model}[/brand]")
     table.add_row("budget", f"$0.000 / [brand]${session.budget_usd:.2f}[/brand]")
     table.add_row("skills", f"{skill_count} bundled, picker mode [brand]{session.skills_mode}[/brand]")
+    _effort_blurb = {
+        "auto": "auto — triage sizes each task",
+        "quick": "quick — plan only",
+        "standard": "standard — plan + self-check",
+        "deep": "deep — plan + critique + revise",
+        "max": "max — + alternative-plan + synthesis",
+    }.get(session.effort, session.effort)
+    table.add_row("reasoning", f"[brand]{_effort_blurb}[/brand]")
     console.print(table)
     console.print()
     console.print(

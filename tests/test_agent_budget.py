@@ -60,6 +60,7 @@ def test_budget_halts_before_draft_when_exceeded(monkeypatch, tmp_path: Path) ->
             provider="openrouter",
             model="openai/gpt-4o-mini",
             budget_usd=0.10,  # too low for even one turn at expensive pricing
+            effort="standard",  # deterministic call count
         )
         bind_tools(tmp_path)
 

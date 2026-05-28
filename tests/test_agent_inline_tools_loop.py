@@ -77,6 +77,7 @@ def session(tmp_path: Path) -> Session:
         provider="tool-calling",
         model="m",
         budget_usd=1.00,
+        effort="standard",  # deterministic call count
     )
 
 

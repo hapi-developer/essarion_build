@@ -61,6 +61,12 @@ def _add_agent_args(parser: argparse.ArgumentParser) -> None:
         help="skill-injection mode (default: auto — picker chooses 3-5)",
     )
     parser.add_argument(
+        "--effort",
+        choices=["quick", "standard", "deep", "max", "auto"],
+        default="auto",
+        help="reasoning depth (default: auto — triage sizes each task)",
+    )
+    parser.add_argument(
         "--resume",
         help="resume a prior session by id (see /load inside the REPL)",
     )
@@ -109,6 +115,9 @@ def _apply_project_config(
     if args.skills == "auto" and "skills_mode" in agent_cfg:
         if agent_cfg["skills_mode"] in {"auto", "all", "none"}:
             args.skills = agent_cfg["skills_mode"]
+    if args.effort == "auto" and "effort" in agent_cfg:
+        if agent_cfg["effort"] in {"quick", "standard", "deep", "max", "auto"}:
+            args.effort = agent_cfg["effort"]
     # The auto_route flag is read by the loop later from project config —
     # we don't fold it into argparse args, just stash it back via data.
     return data
@@ -132,6 +141,8 @@ def _initial_session(args: argparse.Namespace, project: Project) -> Session:
             s.escalate_model = args.escalate or None
         if args.skills:
             s.skills_mode = args.skills
+        if args.effort:
+            s.effort = args.effort
         if args.max_tokens:
             s.max_tokens = args.max_tokens
         if args.budget:
@@ -149,6 +160,7 @@ def _initial_session(args: argparse.Namespace, project: Project) -> Session:
         max_tokens=args.max_tokens or cfg.max_tokens,
         budget_usd=args.budget,
         skills_mode=args.skills,
+        effort=args.effort,
     )
 
 

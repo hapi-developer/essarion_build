@@ -29,6 +29,7 @@ _HELP_GROUPS: list[tuple[str, list[str]]] = [
     ("session", ["/whoami", "/history", "/summary", "/save", "/load", "/export", "/clear", "/version", "/quit"]),
     ("planning", ["/ask"]),
     ("workflows", ["/workflows", "/review", "/fix", "/tests", "/refactor", "/docs", "/security", "/perf", "/explain", "/pr"]),
+    ("reasoning", ["/effort"]),
     ("models & cost", ["/model", "/escalate", "/budget", "/cost", "/stream", "/keys"]),
     ("skills & memory", ["/skills", "/remember", "/forget"]),
     ("project & files", ["/cd", "/pwd"]),
@@ -516,6 +517,60 @@ def _cmd_stream(console: Console, session: Session, args: str) -> CommandResult:
     return "continue"
 
 
+def _cmd_effort(console: Console, session: Session, args: str) -> CommandResult:
+    """Show or set the reasoning effort level.
+
+    Usage:
+      /effort                 show current level + what each costs
+      /effort auto            tiny triage sizes each task, then routes
+      /effort quick           plan only (1 call) — trivial tasks
+      /effort standard        plan + self-check (2 calls)
+      /effort deep            + critique + revise (4 calls)
+      /effort max             + alternative-plan + synthesis (6 calls)
+    """
+    from .. import VALID_EFFORTS, approx_reason_calls
+    from rich.table import Table
+
+    arg = args.strip().lower()
+    if not arg:
+        table = Table(title="reasoning effort", title_style="brand")
+        table.add_column("level", style="key")
+        table.add_column("reason calls", justify="right", style="meta")
+        table.add_column("what it adds", style="meta")
+        rows = {
+            "quick": "plan only — trivial tasks",
+            "standard": "plan + adversarial self-check",
+            "deep": "+ critique the plan, then revise it",
+            "max": "+ explore an alternative plan, then synthesize",
+            "auto": "triage sizes the task, routes to quick/standard/deep",
+        }
+        for level, desc in rows.items():
+            calls = "1-4*" if level == "auto" else str(approx_reason_calls(level))
+            marker = "  ← current" if level == session.effort else ""
+            table.add_row(level + marker, calls, desc)
+        console.print(table)
+        console.print(
+            "[hint]* auto = 1 triage call + the resolved level. "
+            "Deeper levels refine the (short) plan, so they stay cheap "
+            "relative to drafting code.[/hint]"
+        )
+        return "continue"
+
+    if arg not in VALID_EFFORTS:
+        console.print(
+            f"[err]unknown effort {arg!r}. choose: {', '.join(VALID_EFFORTS)}[/err]"
+        )
+        return "continue"
+    session.effort = arg
+    console.print(f"[ok]reasoning effort set to [/ok][phase.plan]{arg}[/phase.plan]")
+    if arg == "max":
+        console.print(
+            "[hint]max is 6 reasoning calls per turn — use it for "
+            "irreversible or security-critical work.[/hint]"
+        )
+    return "continue"
+
+
 def _cmd_cost(console: Console, session: Session, args: str) -> CommandResult:
     """Show projected and actual cost.
 
@@ -745,6 +800,10 @@ def _cmd_whoami(console: Console, session: Session, args: str) -> CommandResult:
     table.add_row(
         "skills",
         f"picker mode [brand]{session.skills_mode}[/brand]",
+    )
+    table.add_row(
+        "reasoning",
+        f"effort [brand]{session.effort}[/brand]",
     )
     table.add_row(
         "budget",
@@ -986,6 +1045,7 @@ COMMANDS: dict[str, tuple[Callable, str]] = {
     "/ask": (_cmd_ask, "quick reason() only, no draft phase"),
     "/cost": (_cmd_cost, "show session cost ledger or estimate against a path"),
     "/stream": (_cmd_stream, "toggle streamed draft output (token-by-token)"),
+    "/effort": (_cmd_effort, "show or set reasoning depth (quick/standard/deep/max/auto)"),
     "/whoami": (_cmd_whoami, "one-screen status: project + model + memory + budget"),
     "/summary": (_cmd_summary, "one-paragraph summary of this session — useful for commits/PRs"),
     "/workflows": (_cmd_workflows_list, "list bundled workflows + their slash shortcuts"),

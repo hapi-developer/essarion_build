@@ -59,6 +59,7 @@ def streaming_session(tmp_path: Path) -> Session:
         model="m",
         stream=True,
         budget_usd=1.00,
+        effort="standard",  # deterministic call count for the stub script
     )
 
 
@@ -107,6 +108,7 @@ def test_run_turn_without_streaming_uses_spinner(
             model="m",
             stream=False,
             budget_usd=1.00,
+            effort="standard",  # deterministic call count for the stub script
         )
         monkeypatch.setattr(_ui, "prompt_approve_plan", lambda console: "approve")
         monkeypatch.setattr(_ui, "prompt_approve_apply", lambda console, kind="code": "discard")

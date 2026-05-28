@@ -343,6 +343,7 @@ def _run_plan_phase(
                     context=ctx,
                     _runtime=_make_runtime(session.provider, session.model),
                     max_tokens=session.max_tokens,
+                    effort=session.effort,
                 )
             except _MissingKeyError as e:
                 console.print(f"[err]plan failed: missing API key[/err]")
@@ -378,6 +379,13 @@ def _run_plan_phase(
         if r is None:
             return None
     _record_phase_usage(turn, session, r.usage)
+    if getattr(r, "effort", ""):
+        turn.effort = r.effort
+        if session.effort == "auto":
+            console.print(
+                f"[meta]reasoning depth: [/meta][phase.plan]{r.effort}[/phase.plan]"
+                f"[meta] (auto-sized for this task)[/meta]"
+            )
     _ui.render_plan(console, r.plan, r.tradeoffs, r.verdict)
     return r
 
@@ -450,6 +458,7 @@ def _run_draft_phase(
                     context=ctx,
                     _runtime=_make_runtime(session.provider, session.model),
                     max_tokens=session.max_tokens,
+                    effort=session.effort,
                 )
             except _MissingKeyError as e:
                 console.print(f"[err]draft failed: missing API key[/err]")
@@ -476,6 +485,7 @@ def _run_draft_phase(
                     context=ctx,
                     _runtime=_make_runtime(session.provider, session.escalate_model),
                     max_tokens=session.max_tokens,
+                    effort=session.effort,
                 )
             except Exception as e:  # noqa: BLE001
                 console.print(
@@ -557,15 +567,15 @@ def _maybe_handle_workflow(
     try:
         with console.status("[brand]workflow…[/brand]", spinner="dots"):
             if head == "review":
-                r = workflows.review(body, context=ctx, _runtime=runtime)
+                r = workflows.review(body, context=ctx, _runtime=runtime, effort=session.effort)
             elif head == "security-review":
-                r = workflows.security_review(body, context=ctx, _runtime=runtime)
+                r = workflows.security_review(body, context=ctx, _runtime=runtime, effort=session.effort)
             elif head == "perf-review":
-                r = workflows.performance_review(body, context=ctx, _runtime=runtime)
+                r = workflows.performance_review(body, context=ctx, _runtime=runtime, effort=session.effort)
             elif head == "explain":
-                r = workflows.explain_code(body, context=ctx, _runtime=runtime)
+                r = workflows.explain_code(body, context=ctx, _runtime=runtime, effort=session.effort)
             elif head == "fix-bug":
-                g = workflows.fix_bug(body, context=ctx, _runtime=runtime)
+                g = workflows.fix_bug(body, context=ctx, _runtime=runtime, effort=session.effort)
                 _record_phase_usage(turn, session, g.usage)
                 turn.plan = g.reasoning.plan
                 turn.tradeoffs = g.reasoning.tradeoffs
@@ -577,7 +587,7 @@ def _maybe_handle_workflow(
                 _apply_or_save(console, session, turn, g.code)
                 return True
             elif head == "tests":
-                g = workflows.write_tests(body, context=ctx, _runtime=runtime)
+                g = workflows.write_tests(body, context=ctx, _runtime=runtime, effort=session.effort)
                 _record_phase_usage(turn, session, g.usage)
                 turn.plan = g.reasoning.plan
                 turn.code = g.code
@@ -586,7 +596,7 @@ def _maybe_handle_workflow(
                 _apply_or_save(console, session, turn, g.code)
                 return True
             elif head == "refactor":
-                g = workflows.refactor(body, context=ctx, _runtime=runtime)
+                g = workflows.refactor(body, context=ctx, _runtime=runtime, effort=session.effort)
                 _record_phase_usage(turn, session, g.usage)
                 turn.plan = g.reasoning.plan
                 turn.code = g.code
@@ -595,14 +605,14 @@ def _maybe_handle_workflow(
                 _apply_or_save(console, session, turn, g.code)
                 return True
             elif head == "docs":
-                g = workflows.docs(body, context=ctx, _runtime=runtime)
+                g = workflows.docs(body, context=ctx, _runtime=runtime, effort=session.effort)
                 _record_phase_usage(turn, session, g.usage)
                 turn.code = g.code
                 _ui.render_plan(console, g.reasoning.plan, g.reasoning.tradeoffs, g.reasoning.verdict)
                 _apply_or_save(console, session, turn, g.code)
                 return True
             elif head == "pr-description":
-                g = workflows.write_pr_description(body, context=ctx, _runtime=runtime)
+                g = workflows.write_pr_description(body, context=ctx, _runtime=runtime, effort=session.effort)
                 _record_phase_usage(turn, session, g.usage)
                 turn.code = g.code
                 _ui.render_plan(console, g.reasoning.plan, g.reasoning.tradeoffs, g.reasoning.verdict)
@@ -687,6 +697,7 @@ def _maybe_auto_verify(console, session: Session, turn: TaskTurn) -> None:
 
 def run_turn(console, session: Session, task: str) -> None:
     """Run one full task end-to-end (the plan-first loop)."""
+    from .. import approx_generate_calls
     from ._pricing import estimate_turn_cost_usd, format_cost
 
     cwd = Path(session.cwd)
@@ -694,11 +705,22 @@ def run_turn(console, session: Session, task: str) -> None:
     if picks:
         _ui.render_skills_picked(console, picks, why)
 
+    # Project the call count from the effort. For "auto" we can't know the
+    # resolved depth until triage runs, so assume "deep" as a conservative
+    # upper-ish bound (+1 for the triage call itself).
+    if session.effort == "auto":
+        n_calls = approx_generate_calls("deep") + 1
+    else:
+        try:
+            n_calls = approx_generate_calls(session.effort)
+        except Exception:  # noqa: BLE001
+            n_calls = 3
+
     # Pre-flight projected cost so the user sees what this turn will cost
     # before paying for it.
     tokens, projected = estimate_turn_cost_usd(
         ctx, provider=session.provider, model=session.model,
-        max_tokens=session.max_tokens, n_calls=3,
+        max_tokens=session.max_tokens, n_calls=n_calls,
     )
 
     # Auto-compact: if the projected cost would blow the remaining budget,
@@ -713,7 +735,7 @@ def run_turn(console, session: Session, task: str) -> None:
             shrunk = compact(ctx, max_tokens=target_tokens)
             new_tokens, new_projected = estimate_turn_cost_usd(
                 shrunk, provider=session.provider, model=session.model,
-                max_tokens=session.max_tokens, n_calls=3,
+                max_tokens=session.max_tokens, n_calls=n_calls,
             )
             if new_projected < projected:
                 ctx = shrunk
