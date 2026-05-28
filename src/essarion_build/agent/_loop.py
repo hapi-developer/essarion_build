@@ -46,6 +46,66 @@ from ._commands import dispatch as dispatch_command
 # Regex that finds path-shaped tokens in a user message. Used by the
 # auto-attach step to load files the user clearly wants the agent to see.
 _PATH_RE = re.compile(r"(?:\b|^)([\w/._-]+\.(?:py|ts|tsx|js|jsx|md|sql|toml|yml|yaml|json|rs|go|java|kt|rb|sh))(?:\b|$)")
+
+
+def _related_paths(rel: str, cwd: Path) -> list[str]:
+    """Given a source file path, guess where its test file lives (or vice versa).
+
+    Common conventions handled:
+    - `src/foo.py`     → `tests/test_foo.py`
+    - `src/auth/login.py` → `tests/test_auth_login.py` / `tests/test_login.py`
+    - `tests/test_foo.py` → `src/foo.py`
+    - JS / TS: `src/foo.ts` ↔ `src/foo.test.ts` / `__tests__/foo.test.ts`
+
+    Returns paths to *check* (relative to cwd); caller verifies existence.
+    """
+    from pathlib import PurePosixPath
+
+    p = PurePosixPath(rel)
+    stem = p.stem
+    suffix = p.suffix
+    parts = list(p.parts)
+    candidates: list[str] = []
+
+    # Python: src/foo/bar.py ↔ tests/test_bar.py (or tests/<dir>/test_bar.py)
+    if suffix == ".py":
+        if stem.startswith("test_"):
+            # Test → source. Strip the test_ prefix and look in common src paths.
+            src_stem = stem[len("test_") :]
+            for src_root in ("src/essarion_build", "src", "lib", ""):
+                for sub in (parts[1:-1] if len(parts) > 2 else [], []):
+                    candidates.append(str(PurePosixPath(src_root, *sub, src_stem + ".py")).lstrip("/"))
+            # Also try without the test_ prefix
+            for src_root in ("src", "lib", ""):
+                candidates.append(str(PurePosixPath(src_root, src_stem + ".py")).lstrip("/"))
+        else:
+            # Source → test. Try common test paths.
+            candidates.append(f"tests/test_{stem}.py")
+            candidates.append(f"tests/{stem}_test.py")
+            if len(parts) > 1:
+                # Reflect the source dir into a test dir
+                middle = "_".join(parts[1:-1]) if len(parts) > 2 else ""
+                if middle:
+                    candidates.append(f"tests/test_{middle}_{stem}.py")
+    # JS/TS: foo.ts ↔ foo.test.ts / foo.spec.ts ↔ __tests__/foo.test.ts
+    if suffix in {".ts", ".tsx", ".js", ".jsx"}:
+        if ".test" in stem or ".spec" in stem:
+            src_stem = stem.replace(".test", "").replace(".spec", "")
+            candidates.append(str(PurePosixPath(*parts[:-1], src_stem + suffix)).lstrip("/"))
+        else:
+            for ext in (".test", ".spec"):
+                candidates.append(str(PurePosixPath(*parts[:-1], f"{stem}{ext}{suffix}")).lstrip("/"))
+            if len(parts) > 1:
+                candidates.append(str(PurePosixPath(*parts[:-1], "__tests__", f"{stem}.test{suffix}")).lstrip("/"))
+
+    # Dedup, preserve order.
+    seen: set[str] = set()
+    out: list[str] = []
+    for c in candidates:
+        if c and c not in seen:
+            seen.add(c)
+            out.append(c)
+    return out
 # Directory references — words that look like "src/auth/" or "tests/".
 _DIR_RE = re.compile(r"(?:\b|^)((?:[\w._-]+/)+)(?:\b|$|\s)")
 # How many files to auto-attach from a referenced directory.
@@ -77,6 +137,24 @@ def _autoload_files(task: str, cwd: Path, ctx: Context, console) -> list[str]:
         ctx.repo_files.append(RepoFile(path=rel, content=content))
         loaded.append(rel)
         seen_paths.add(rel)
+        # Also auto-load the related test file if it exists. This is the
+        # "review src/auth.py" → also load "tests/test_auth.py" hack that
+        # makes review and fix-bug workflows much smarter.
+        for sibling in _related_paths(rel, cwd):
+            if sibling in seen_paths:
+                continue
+            sp = cwd / sibling
+            if not sp.is_file():
+                continue
+            try:
+                sibling_content = sp.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+            if len(sibling_content) > 100_000:
+                sibling_content = sibling_content[:100_000] + "\n... (truncated)"
+            ctx.repo_files.append(RepoFile(path=sibling, content=sibling_content))
+            loaded.append(sibling)
+            seen_paths.add(sibling)
 
     # Directory references — attach the first N files inside, skipping VCS/build dirs.
     skip_parts = {".git", "__pycache__", "node_modules", ".venv", "venv", "dist", "build"}

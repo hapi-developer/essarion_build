@@ -72,6 +72,35 @@ def test_autoload_dedup_between_file_and_dir(tmp_path: Path, console: Console) -
     assert paths.count("src/a.py") == 1
 
 
+def test_related_paths_python_source_to_test(tmp_path: Path) -> None:
+    rels = _loop._related_paths("src/auth.py", tmp_path)
+    assert "tests/test_auth.py" in rels
+
+
+def test_related_paths_python_test_to_source(tmp_path: Path) -> None:
+    rels = _loop._related_paths("tests/test_auth.py", tmp_path)
+    assert any("auth.py" in r for r in rels)
+
+
+def test_related_paths_typescript(tmp_path: Path) -> None:
+    rels = _loop._related_paths("src/foo.ts", tmp_path)
+    assert "src/foo.test.ts" in rels
+    assert "src/foo.spec.ts" in rels
+
+
+def test_autoload_picks_up_sibling_test(tmp_path: Path, console: Console) -> None:
+    (tmp_path / "src").mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "src" / "auth.py").write_text("def verify(): pass\n")
+    (tmp_path / "tests" / "test_auth.py").write_text("def test_verify(): pass\n")
+
+    ctx = Context()
+    _loop._autoload_files("review src/auth.py", tmp_path, ctx, console)
+    paths = {f.path for f in ctx.repo_files}
+    assert "src/auth.py" in paths
+    assert "tests/test_auth.py" in paths  # auto-loaded as related
+
+
 def test_missing_api_key_shows_friendly_message(
     monkeypatch, console: Console, tmp_path: Path
 ) -> None:
