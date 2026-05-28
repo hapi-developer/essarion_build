@@ -17,6 +17,7 @@ outputs. v0.3 ships:
 
 from . import auth, evals, recipes, redact, validators, workflows
 from ._async_api import agenerate, areason
+from ._async_streaming import astream_generate, astream_reason
 from ._batch import BatchResult, batch_generate, batch_reason, run_batch
 from ._async_providers import (
     AsyncProvider,
@@ -102,6 +103,8 @@ __all__ = [
     "areason",
     "agenerate",
     "agenerate_json",
+    "astream_reason",
+    "astream_generate",
     # Batch
     "batch_reason",
     "batch_generate",
