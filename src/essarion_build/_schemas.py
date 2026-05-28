@@ -65,12 +65,14 @@ def generate_json(
     api_key: str | None = None,
     model: str | None = None,
     max_tokens: int | None = None,
+    effort: str | None = None,
     _runtime: Runtime | None = None,
 ) -> tuple[dict[str, Any], Generation]:
     """Like `generate()` but the code field must validate against `schema`.
 
     Returns a `(parsed_dict, raw_generation)` tuple. Raises
     `SchemaValidationError` if the output cannot be made to validate.
+    Accepts the same `effort` levels as `generate()`.
     """
     ctx = context.model_copy(deep=True) if context is not None else Context()
     ctx.add_note(_instructions(_schema_text(schema)))
@@ -83,6 +85,7 @@ def generate_json(
         api_key=api_key,
         model=model,
         max_tokens=max_tokens,
+        effort=effort,
         _runtime=_runtime,
     )
     parsed, error = _try_parse(g.code, schema)
@@ -103,6 +106,7 @@ def generate_json(
         api_key=api_key,
         model=model,
         max_tokens=max_tokens,
+        effort=effort,
         _runtime=_runtime,
     )
     parsed, error = _try_parse(g2.code, schema)
@@ -151,9 +155,10 @@ async def agenerate_json(
     api_key: str | None = None,
     model: str | None = None,
     max_tokens: int | None = None,
+    effort: str | None = None,
     _runtime: Any | None = None,
 ) -> tuple[dict[str, Any], "Generation"]:
-    """Async sibling of `generate_json`."""
+    """Async sibling of `generate_json`. Accepts the same `effort` levels."""
     from ._async_api import agenerate
 
     ctx = context.model_copy(deep=True) if context is not None else Context()
@@ -167,6 +172,7 @@ async def agenerate_json(
         api_key=api_key,
         model=model,
         max_tokens=max_tokens,
+        effort=effort,
         _runtime=_runtime,
     )
     parsed, error = _try_parse(g.code, schema)
@@ -186,6 +192,7 @@ async def agenerate_json(
         api_key=api_key,
         model=model,
         max_tokens=max_tokens,
+        effort=effort,
         _runtime=_runtime,
     )
     parsed, error = _try_parse(g2.code, schema)
