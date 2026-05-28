@@ -140,6 +140,22 @@ g = workflows.docs("public Context API", repo="./")
 
 Each workflow picks a sensible default skill set, frames the task, and runs the loop. They're thin on purpose — drop down to `reason()` / `generate()` when you need full control.
 
+## Recipes
+
+For the most common asks, skip prompt engineering — pull a recipe:
+
+```python
+from essarion_build import Context, recipes, reason
+
+task, skills = recipes.audit_for_race_conditions("the booking flow")
+ctx = Context().with_skills(skills).add_repo("./src/booking")
+r = reason(task, context=ctx)
+```
+
+Recipes ship for: race conditions, N+1 queries, type-annotation passes,
+runbooks, API design, data migrations, hot-path optimization, endpoint
+hardening, schema design. See `essarion_build.recipes.list_recipes()`.
+
 ## Streaming
 
 See progress in real time. Yields a `phase_start`/`token`/`phase_end`/`usage`/`complete` event sequence:

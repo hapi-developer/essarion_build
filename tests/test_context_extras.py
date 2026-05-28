@@ -150,3 +150,46 @@ def test_context_merge_dedups_repo_files_by_path_newest_wins() -> None:
     merged = base.merge(other)
     assert len(merged.repo_files) == 1
     assert merged.repo_files[0].content == "NEW"
+
+
+def test_diff_from_git_returns_diff_object(tmp_path) -> None:
+    """Smoke test using a freshly init'd repo with one tracked change."""
+    import shutil
+    import subprocess
+
+    import pytest
+
+    from essarion_build import Diff
+
+    if shutil.which("git") is None:
+        pytest.skip("git not on PATH")
+
+    # Init a tiny repo so we don't depend on the surrounding one's state.
+    # Disable signing / hooks for this throwaway repo — the test only needs
+    # working diffs, not commit authentication.
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "t@t"], cwd=tmp_path, check=True
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "T"], cwd=tmp_path, check=True
+    )
+    subprocess.run(
+        ["git", "config", "commit.gpgsign", "false"], cwd=tmp_path, check=True
+    )
+    (tmp_path / "x.py").write_text("a = 1\n")
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+    result = subprocess.run(
+        ["git", "commit", "-q", "--no-verify", "-m", "init"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        # Sandboxed env forces commit signing — skip without failing.
+        pytest.skip(f"git commit failed in sandbox: {result.stderr.strip()}")
+    (tmp_path / "x.py").write_text("a = 2\n")
+
+    d = Diff.from_git(cwd=tmp_path)
+    assert "a = 2" in d.body
+    assert d.title == "HEAD"

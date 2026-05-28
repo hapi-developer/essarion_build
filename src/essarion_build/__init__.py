@@ -15,7 +15,7 @@ outputs. v0.3 ships:
 - CLI: `essarion-build`
 """
 
-from . import auth, evals
+from . import auth, evals, recipes, workflows
 from ._async_api import agenerate, areason
 from ._batch import BatchResult, batch_generate, batch_reason, run_batch
 from ._async_providers import (
@@ -164,5 +164,7 @@ __all__ = [
     "SchemaValidationError",
     "auth",
     "evals",
+    "recipes",
+    "workflows",
     "__version__",
 ]

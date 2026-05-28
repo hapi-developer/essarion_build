@@ -88,6 +88,42 @@ class Diff(BaseModel):
     title: str
     body: str
 
+    @classmethod
+    def from_git(
+        cls,
+        ref: str = "HEAD",
+        *,
+        base: str | None = None,
+        cwd: str | Path | None = None,
+    ) -> "Diff":
+        """Capture `git diff` output as a Diff.
+
+        - `from_git()`              → `git diff HEAD` (uncommitted changes)
+        - `from_git("HEAD")`        → same as above (explicit)
+        - `from_git("HEAD~5..HEAD")`→ a commit range
+        - `from_git("HEAD", base="main")` → `git diff main...HEAD`
+
+        Raises `ContextError` if git is not available or the call fails.
+        """
+        import shutil
+        import subprocess
+
+        if shutil.which("git") is None:
+            raise ContextError("from_git: git binary not found on PATH")
+        if base is not None:
+            args = ["git", "diff", f"{base}...{ref}"]
+            title = f"{base}...{ref}"
+        else:
+            args = ["git", "diff", ref]
+            title = ref
+        try:
+            body = subprocess.check_output(
+                args, cwd=str(cwd) if cwd else None, text=True
+            )
+        except subprocess.CalledProcessError as e:
+            raise ContextError(f"from_git: {' '.join(args)} failed: {e}") from e
+        return cls(title=title, body=body)
+
 
 class Context(BaseModel):
     """Builder for the grounding context a Runtime sees.
