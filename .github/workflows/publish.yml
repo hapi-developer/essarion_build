@@ -1,0 +1,86 @@
+name: Publish to PyPI
+
+# Trusted-publishing workflow. Triggered when a vX.Y.Z tag is pushed.
+# PyPI verifies the GitHub OIDC claim — no API token stored as a secret.
+#
+# One-time setup on PyPI:
+#   1. Register a trusted publisher for project `essarion-build`:
+#      Settings → Publishing → Add a pending publisher
+#      - Owner: hapi-developer
+#      - Repository: essarion_build
+#      - Workflow filename: publish.yml
+#      - Environment name: pypi
+#   2. (If publishing for the first time, register as a Pending publisher
+#      before the project exists on PyPI.)
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+jobs:
+  test:
+    name: Test (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install package + test extras
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[test]"
+      - name: Run tests
+        run: pytest tests/ -v
+
+  build:
+    name: Build sdist and wheel
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install build tools
+        run: python -m pip install --upgrade build twine
+      - name: Build
+        run: python -m build
+      - name: Verify metadata
+        run: twine check dist/*
+      - name: Verify built version matches tag
+        run: |
+          tag="${GITHUB_REF##*/}"          # v0.2.0 → use just the version part
+          version="${tag#v}"
+          built=$(ls dist/essarion_build-*.tar.gz | sed -E 's/.*essarion_build-(.*)\.tar\.gz/\1/')
+          if [ "$built" != "$version" ]; then
+            echo "Tag $tag implies version $version but built $built" >&2
+            exit 1
+          fi
+      - name: Upload distributions as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/
+
+  publish:
+    name: Publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/essarion-build
+    permissions:
+      id-token: write   # required for trusted publishing (OIDC)
+    steps:
+      - name: Download distributions
+        uses: actions/download-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
