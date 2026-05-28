@@ -43,22 +43,31 @@ class _TelemetryConfig:
 _TELEMETRY = _TelemetryConfig()
 
 
+_UNSET = object()
+
+
 def configure_telemetry(
     *,
-    on_event: TelemetryCallback | None = None,
+    on_event: TelemetryCallback | None | object = _UNSET,
     enabled: bool | None = None,
 ) -> None:
     """Set or clear the global telemetry callback.
 
-    Passing `on_event=None` clears the callback. Passing `enabled=False`
-    disables the callback without losing it (so you can toggle).
+    - Pass `on_event=cb` to install a callback and enable telemetry.
+    - Pass `on_event=None` to clear the callback (also disables).
+    - Pass `enabled=False` to disable without clearing (lets you toggle).
+    - Pass `enabled=True` to re-enable a previously installed callback.
+
+    Omitting both is a no-op.
     """
-    if on_event is not None or on_event is None and enabled is False:
-        _TELEMETRY.on_event = on_event
+    if on_event is not _UNSET:
+        _TELEMETRY.on_event = on_event  # type: ignore[assignment]
+        if on_event is None:
+            _TELEMETRY.enabled = False
+        elif enabled is None:
+            _TELEMETRY.enabled = True
     if enabled is not None:
         _TELEMETRY.enabled = enabled
-    elif on_event is not None:
-        _TELEMETRY.enabled = True
 
 
 def emit(kind: str, **fields: Any) -> None:
