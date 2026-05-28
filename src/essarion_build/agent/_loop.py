@@ -264,8 +264,26 @@ def _build_context(
         "Don't use this for write_file/run_shell/start_background — those "
         "happen via the user-approved apply step."
     )
+    # Multi-turn coherence: include the last 2 turns so the model picks up
+    # decisions already made this session. Truncated for token budget.
+    if session.history:
+        recent = session.history[-2:]
+        for i, prior in enumerate(recent, start=len(session.history) - len(recent) + 1):
+            verdict_short = _truncate_one_line(prior.verdict, 200)
+            plan_short = _truncate_one_line(prior.plan, 400)
+            ctx.add_note(
+                f"[prior turn {i}] task: {prior.task[:200]!r}. "
+                f"Plan: {plan_short}. Verdict: {verdict_short}."
+            )
     _autoload_files(task, cwd, ctx, console)
     return ctx, picks, why
+
+
+def _truncate_one_line(text: str, n: int) -> str:
+    text = " ".join((text or "").split())
+    if len(text) <= n:
+        return text
+    return text[: n - 1].rstrip() + "…"
 
 
 def _make_runtime(provider: str, model: str) -> LiteRuntime:
