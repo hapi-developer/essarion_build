@@ -561,11 +561,35 @@ def run_turn(console, session: Session, task: str) -> None:
         _ui.render_skills_picked(console, picks, why)
 
     # Pre-flight projected cost so the user sees what this turn will cost
-    # before paying for it. Empty / no-price models show ($?).
+    # before paying for it.
     tokens, projected = estimate_turn_cost_usd(
         ctx, provider=session.provider, model=session.model,
         max_tokens=session.max_tokens, n_calls=3,
     )
+
+    # Auto-compact: if the projected cost would blow the remaining budget,
+    # try shrinking the context (drop docs / repo files) to fit.
+    if projected and session.budget_usd:
+        remaining = max(0.0, session.budget_usd - session.total_cost_usd)
+        if projected > remaining * 0.8:  # within 80% of remaining is too close
+            from .. import compact
+
+            ratio = (remaining * 0.5) / projected  # aim for half the remaining
+            target_tokens = max(1000, int(tokens * ratio))
+            shrunk = compact(ctx, max_tokens=target_tokens)
+            new_tokens, new_projected = estimate_turn_cost_usd(
+                shrunk, provider=session.provider, model=session.model,
+                max_tokens=session.max_tokens, n_calls=3,
+            )
+            if new_projected < projected:
+                ctx = shrunk
+                console.print(
+                    f"[warn]auto-compacted context "
+                    f"({tokens:,} → {new_tokens:,} tokens, "
+                    f"{format_cost(projected)} → {format_cost(new_projected)})[/warn]"
+                )
+                tokens, projected = new_tokens, new_projected
+
     cost_str = format_cost(projected) if projected else "—"
     console.print(
         f"[meta]context ~{tokens:,} tokens · projected cost: "

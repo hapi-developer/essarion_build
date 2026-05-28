@@ -28,7 +28,7 @@ CommandResult = str  # "continue" | "quit"
 _HELP_GROUPS: list[tuple[str, list[str]]] = [
     ("session", ["/whoami", "/history", "/summary", "/save", "/load", "/export", "/clear", "/version", "/quit"]),
     ("planning", ["/ask"]),
-    ("workflows", ["/review", "/fix", "/tests", "/refactor", "/docs", "/security", "/perf", "/explain", "/pr"]),
+    ("workflows", ["/workflows", "/review", "/fix", "/tests", "/refactor", "/docs", "/security", "/perf", "/explain", "/pr"]),
     ("models & cost", ["/model", "/escalate", "/budget", "/cost", "/stream"]),
     ("skills & memory", ["/skills", "/remember", "/forget"]),
     ("project & files", ["/cd", "/pwd"]),
@@ -524,6 +524,39 @@ def _cmd_cost(console: Console, session: Session, args: str) -> CommandResult:
     return "continue"
 
 
+def _cmd_workflows_list(console: Console, session: Session, args: str) -> CommandResult:
+    """List every available high-level workflow + its slash shortcut."""
+    from rich.table import Table
+
+    from .. import workflows
+
+    table = Table(title="workflows", title_style="brand")
+    table.add_column("slash", style="key")
+    table.add_column("workflow", style="meta")
+    table.add_column("what it does", style="meta")
+    mapping = {
+        "/review": "review",
+        "/fix": "fix_bug",
+        "/tests": "write_tests",
+        "/refactor": "refactor",
+        "/docs": "docs",
+        "/security": "security_review",
+        "/perf": "performance_review",
+        "/explain": "explain_code",
+        "/pr": "write_pr_description",
+    }
+    for slash, name in mapping.items():
+        fn = getattr(workflows, name, None)
+        desc = (fn.__doc__ or "").strip().split("\n", 1)[0] if fn else ""
+        table.add_row(slash, name, desc[:80])
+    console.print(table)
+    console.print(
+        "[hint]invoke via `/<slash> <target>` or by prefixing your task "
+        "with `<verb>:` (e.g. `review: src/auth.py`).[/hint]"
+    )
+    return "continue"
+
+
 def _cmd_summary(console: Console, session: Session, args: str) -> CommandResult:
     """One-paragraph summary of what the agent did this session.
 
@@ -844,6 +877,7 @@ COMMANDS: dict[str, tuple[Callable, str]] = {
     "/stream": (_cmd_stream, "toggle streamed draft output (token-by-token)"),
     "/whoami": (_cmd_whoami, "one-screen status: project + model + memory + budget"),
     "/summary": (_cmd_summary, "one-paragraph summary of this session — useful for commits/PRs"),
+    "/workflows": (_cmd_workflows_list, "list bundled workflows + their slash shortcuts"),
     "/review": (_workflow_command("review"), "shortcut: workflows.review(<target>)"),
     "/fix": (_workflow_command("fix"), "shortcut: workflows.fix_bug(<target>)"),
     "/tests": (_workflow_command("tests"), "shortcut: workflows.write_tests(<target>)"),
