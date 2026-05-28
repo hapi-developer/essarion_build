@@ -16,6 +16,7 @@ outputs. v0.3 ships:
 """
 
 from ._async_api import agenerate, areason
+from ._batch import BatchResult, batch_generate, batch_reason, run_batch
 from ._async_providers import (
     AsyncProvider,
     AsyncStubProvider,
@@ -83,6 +84,11 @@ __all__ = [
     # Async API
     "areason",
     "agenerate",
+    # Batch
+    "batch_reason",
+    "batch_generate",
+    "run_batch",
+    "BatchResult",
     # Decorators
     "reasoned",
     "list_reasoned",

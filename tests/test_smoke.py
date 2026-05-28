@@ -65,6 +65,7 @@ def test_default_config_is_cheap_byok() -> None:
 # -------------------- skills (bundled coding practice) --------------------
 
 EXPECTED_SKILLS = {
+    # v0.2 set
     "secure_coding",
     "error_handling",
     "testing",
@@ -86,6 +87,23 @@ EXPECTED_SKILLS = {
     "auth_security",
     "observability",
     "scope_discipline",
+    # v0.3 additions
+    "rust_idioms",
+    "go_idioms",
+    "sql_idioms",
+    "react_patterns",
+    "accessibility",
+    "internationalization",
+    "caching",
+    "microservices",
+    "feature_flags",
+    "event_driven",
+    "state_management",
+    "llm_integration",
+    "release_engineering",
+    "incident_response",
+    "dx",
+    "migrations",
 }
 
 
