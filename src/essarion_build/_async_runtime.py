@@ -14,10 +14,15 @@ from ._context import Context
 from ._effort import (
     DEFAULT_EFFORT,
     EFFORT_AUTO,
+    EFFORT_DEEP,
+    EFFORT_QUICK,
+    EFFORT_STANDARD,
+    MAX_AUTO_ESCALATIONS,
     effort_for_complexity,
     plan_refinement_steps,
     runs_reason_selfcheck,
     validate_effort,
+    verdict_signals_risk,
 )
 from ._prompts import (
     current_alt_plan,
@@ -173,6 +178,23 @@ class AsyncLiteRuntime:
                 plan, tradeoffs, verdict = s["plan"], s["tradeoffs"], s["verdict"]
         return plan, tradeoffs, verdict
 
+    async def _escalate_plan_once(
+        self, *, system: str, messages: list[dict[str, Any]],
+        budget: int, usage_accum: list[Usage],
+    ) -> tuple[str, str, str]:
+        """One async critique → revise round on the existing plan thread."""
+        messages.append({"role": "user", "content": current_critique_plan()})
+        await self._step(
+            system=system, messages=messages, max_tokens=budget,
+            usage_accum=usage_accum, required_tags=["critique"],
+        )
+        messages.append({"role": "user", "content": current_revise_plan()})
+        r = await self._step(
+            system=system, messages=messages, max_tokens=budget,
+            usage_accum=usage_accum, required_tags=["plan", "tradeoffs", "verdict"],
+        )
+        return r["plan"], r["tradeoffs"], r["verdict"]
+
     async def reason(
         self,
         *,
@@ -186,6 +208,7 @@ class AsyncLiteRuntime:
         system = _build_system(context)
         usage_accum: list[Usage] = []
 
+        was_auto = validate_effort(effort or DEFAULT_EFFORT) == EFFORT_AUTO
         resolved = await self._resolve_effort(
             task=task, system=system, budget=budget,
             usage_accum=usage_accum, effort=effort,
@@ -204,6 +227,26 @@ class AsyncLiteRuntime:
                 usage_accum=usage_accum, required_tags=["verdict"],
             )
             verdict = sc["verdict"] or verdict
+
+        escalations = 0
+        while (
+            was_auto
+            and escalations < MAX_AUTO_ESCALATIONS
+            and resolved in (EFFORT_QUICK, EFFORT_STANDARD)
+            and verdict_signals_risk(verdict)
+        ):
+            plan, tradeoffs, verdict = await self._escalate_plan_once(
+                system=system, messages=messages, budget=budget,
+                usage_accum=usage_accum,
+            )
+            messages.append({"role": "user", "content": current_selfcheck_reason()})
+            sc2 = await self._step(
+                system=system, messages=messages, max_tokens=budget,
+                usage_accum=usage_accum, required_tags=["verdict"],
+            )
+            verdict = sc2["verdict"] or verdict
+            resolved = EFFORT_DEEP
+            escalations += 1
 
         return RuntimeResult(
             plan=plan,
@@ -226,6 +269,7 @@ class AsyncLiteRuntime:
         system = _build_system(context)
         usage_accum: list[Usage] = []
 
+        was_auto = validate_effort(effort or DEFAULT_EFFORT) == EFFORT_AUTO
         resolved = await self._resolve_effort(
             task=task, system=system, budget=budget,
             usage_accum=usage_accum, effort=effort,
@@ -237,6 +281,17 @@ class AsyncLiteRuntime:
             system=system, messages=messages, budget=budget,
             usage_accum=usage_accum, effort=resolved,
         )
+
+        if (
+            was_auto
+            and resolved in (EFFORT_QUICK, EFFORT_STANDARD)
+            and verdict_signals_risk(verdict)
+        ):
+            plan, tradeoffs, verdict = await self._escalate_plan_once(
+                system=system, messages=messages, budget=budget,
+                usage_accum=usage_accum,
+            )
+            resolved = EFFORT_DEEP
 
         messages.append({"role": "user", "content": current_draft()})
         step2 = await self._step(

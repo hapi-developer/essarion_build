@@ -44,3 +44,16 @@ async def test_agenerate_deep_five_calls() -> None:
     assert "revised" in g.reasoning.plan
     assert g.reasoning.effort == "deep"
     assert g.defense == "safe"
+
+
+async def test_areason_auto_escalates_on_risk() -> None:
+    risk = "<verdict>do not ship without resolving the race</verdict>"
+    stub = AsyncStubProvider(responses=[
+        "<complexity>3</complexity>",  # triage → standard
+        PLAN, risk,                     # plan + selfcheck flags risk
+        CRITIQUE, REVISED, SELFCHECK,   # escalation round
+    ])
+    r = await areason("harden", context=Context(), effort="auto", _runtime=AsyncLiteRuntime(stub))
+    assert stub.call_count == 6
+    assert r.effort == "deep"
+    assert "revised" in r.plan
