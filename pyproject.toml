@@ -10,7 +10,7 @@ readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.10"
 authors = [
-    { name = "Essarion", email = "hello@essarion.com" },
+    { name = "Essarion" },
 ]
 keywords = ["llm", "reasoning", "anthropic", "claude", "coding-agent", "byok"]
 classifiers = [
@@ -39,6 +39,7 @@ test = [
 Homepage = "https://essarion.com"
 Source = "https://github.com/hapi-developer/essarion_build"
 Issues = "https://github.com/hapi-developer/essarion_build/issues"
+Changelog = "https://github.com/hapi-developer/essarion_build/blob/main/CHANGELOG.md"
 
 [tool.setuptools.packages.find]
 where = ["src"]

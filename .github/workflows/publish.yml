@@ -1,17 +1,23 @@
 name: Publish to PyPI
 
 # Trusted-publishing workflow. Triggered when a vX.Y.Z tag is pushed.
-# PyPI verifies the GitHub OIDC claim — no API token stored as a secret.
+# PyPI and TestPyPI verify the GitHub OIDC claim — no API tokens stored.
 #
-# One-time setup on PyPI:
-#   1. Register a trusted publisher for project `essarion-build`:
-#      Settings → Publishing → Add a pending publisher
+# Pipeline: test → build → publish-testpypi → publish-pypi
+# TestPyPI runs first; PyPI only fires if TestPyPI succeeded.
+#
+# One-time setup before the first release:
+#   1. Register a pending publisher on TestPyPI:
+#      https://test.pypi.org → Account → Publishing → Add a pending publisher
+#      - PyPI project name: essarion-build
 #      - Owner: hapi-developer
 #      - Repository: essarion_build
 #      - Workflow filename: publish.yml
-#      - Environment name: pypi
-#   2. (If publishing for the first time, register as a Pending publisher
-#      before the project exists on PyPI.)
+#      - Environment name: testpypi
+#   2. Register a pending publisher on PyPI with the same fields but
+#      environment name: pypi.
+#   3. In this GitHub repo, create two environments (Settings → Environments):
+#      `testpypi` and `pypi`. Optionally require reviewer approval on `pypi`.
 
 on:
   push:
@@ -67,9 +73,29 @@ jobs:
           name: python-package-distributions
           path: dist/
 
-  publish:
-    name: Publish to PyPI
+  publish-testpypi:
+    name: Publish to TestPyPI
     needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/p/essarion-build
+    permissions:
+      id-token: write   # required for trusted publishing (OIDC)
+    steps:
+      - name: Download distributions
+        uses: actions/download-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/
+      - name: Publish to TestPyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+
+  publish-pypi:
+    name: Publish to PyPI
+    needs: publish-testpypi
     runs-on: ubuntu-latest
     environment:
       name: pypi
