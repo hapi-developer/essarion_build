@@ -5,16 +5,30 @@ Same prompts, same tag-repair logic. Only the provider transport is async.
 
 from __future__ import annotations
 
+import re
 from typing import Any, Protocol
 
 from ._async_providers import AsyncProvider, build_async_provider
 from ._config import current
 from ._context import Context
+from ._effort import (
+    DEFAULT_EFFORT,
+    EFFORT_AUTO,
+    effort_for_complexity,
+    plan_refinement_steps,
+    runs_reason_selfcheck,
+    validate_effort,
+)
 from ._prompts import (
+    current_alt_plan,
+    current_critique_plan,
     current_draft,
     current_plan,
+    current_revise_plan,
     current_selfcheck_generate,
     current_selfcheck_reason,
+    current_synthesize_plan,
+    current_triage,
 )
 from ._providers import Usage
 from ._runtime import RuntimeResult, _build_system, _extract_tag, _repair_prompt
@@ -23,12 +37,22 @@ from .exceptions import CloudRuntimeNotAvailable, ReasoningFormatError
 
 class AsyncRuntime(Protocol):
     async def reason(
-        self, *, task: str, context: Context, max_tokens: int | None = None
+        self,
+        *,
+        task: str,
+        context: Context,
+        max_tokens: int | None = None,
+        effort: str | None = None,
     ) -> RuntimeResult:
         ...
 
     async def generate(
-        self, *, task: str, context: Context, max_tokens: int | None = None
+        self,
+        *,
+        task: str,
+        context: Context,
+        max_tokens: int | None = None,
+        effort: str | None = None,
     ) -> RuntimeResult:
         ...
 
@@ -79,58 +103,139 @@ class AsyncLiteRuntime:
             )
         return tags
 
+    async def _triage(
+        self, *, task: str, system: str, budget: int, usage_accum: list[Usage]
+    ) -> int:
+        """One cheap async classification call. Returns complexity 1..5."""
+        triage_budget = min(budget, 256)
+        resp = await self._provider.complete(
+            system=system,
+            messages=[{"role": "user", "content": current_triage().format(task=task)}],
+            max_tokens=triage_budget,
+        )
+        usage_accum.append(resp.usage)
+        raw = _extract_tag(resp.text, "complexity") or resp.text
+        match = re.search(r"[1-5]", raw)
+        n = int(match.group()) if match else 3
+        return max(1, min(5, n))
+
+    async def _resolve_effort(
+        self, *, task: str, system: str, budget: int,
+        usage_accum: list[Usage], effort: str | None,
+    ) -> str:
+        e = validate_effort(effort or DEFAULT_EFFORT)
+        if e != EFFORT_AUTO:
+            return e
+        complexity = await self._triage(
+            task=task, system=system, budget=budget, usage_accum=usage_accum
+        )
+        return effort_for_complexity(complexity)
+
+    async def _run_plan_phase(
+        self, *, system: str, messages: list[dict[str, Any]],
+        budget: int, usage_accum: list[Usage], effort: str,
+    ) -> tuple[str, str, str]:
+        step = await self._step(
+            system=system, messages=messages, max_tokens=budget,
+            usage_accum=usage_accum,
+            required_tags=["plan", "tradeoffs", "verdict"],
+        )
+        plan, tradeoffs, verdict = step["plan"], step["tradeoffs"], step["verdict"]
+        for ref in plan_refinement_steps(effort):
+            if ref == "critique":
+                messages.append({"role": "user", "content": current_critique_plan()})
+                await self._step(
+                    system=system, messages=messages, max_tokens=budget,
+                    usage_accum=usage_accum, required_tags=["critique"],
+                )
+            elif ref == "revise":
+                messages.append({"role": "user", "content": current_revise_plan()})
+                r = await self._step(
+                    system=system, messages=messages, max_tokens=budget,
+                    usage_accum=usage_accum,
+                    required_tags=["plan", "tradeoffs", "verdict"],
+                )
+                plan, tradeoffs, verdict = r["plan"], r["tradeoffs"], r["verdict"]
+            elif ref == "alt":
+                messages.append({"role": "user", "content": current_alt_plan()})
+                await self._step(
+                    system=system, messages=messages, max_tokens=budget,
+                    usage_accum=usage_accum,
+                    required_tags=["plan", "tradeoffs", "verdict"],
+                )
+            elif ref == "synthesize":
+                messages.append({"role": "user", "content": current_synthesize_plan()})
+                s = await self._step(
+                    system=system, messages=messages, max_tokens=budget,
+                    usage_accum=usage_accum,
+                    required_tags=["plan", "tradeoffs", "verdict"],
+                )
+                plan, tradeoffs, verdict = s["plan"], s["tradeoffs"], s["verdict"]
+        return plan, tradeoffs, verdict
+
     async def reason(
-        self, *, task: str, context: Context, max_tokens: int | None = None
+        self,
+        *,
+        task: str,
+        context: Context,
+        max_tokens: int | None = None,
+        effort: str | None = None,
     ) -> RuntimeResult:
         cfg = current()
         budget = max_tokens if max_tokens is not None else cfg.max_tokens
         system = _build_system(context)
         usage_accum: list[Usage] = []
 
+        resolved = await self._resolve_effort(
+            task=task, system=system, budget=budget,
+            usage_accum=usage_accum, effort=effort,
+        )
         messages: list[dict[str, Any]] = [
             {"role": "user", "content": current_plan().format(task=task)},
         ]
-        step1 = await self._step(
-            system=system,
-            messages=messages,
-            max_tokens=budget,
-            usage_accum=usage_accum,
-            required_tags=["plan", "tradeoffs", "verdict"],
+        plan, tradeoffs, verdict = await self._run_plan_phase(
+            system=system, messages=messages, budget=budget,
+            usage_accum=usage_accum, effort=resolved,
         )
-
-        messages.append({"role": "user", "content": current_selfcheck_reason()})
-        step3 = await self._step(
-            system=system,
-            messages=messages,
-            max_tokens=budget,
-            usage_accum=usage_accum,
-            required_tags=["verdict"],
-        )
+        if runs_reason_selfcheck(resolved):
+            messages.append({"role": "user", "content": current_selfcheck_reason()})
+            sc = await self._step(
+                system=system, messages=messages, max_tokens=budget,
+                usage_accum=usage_accum, required_tags=["verdict"],
+            )
+            verdict = sc["verdict"] or verdict
 
         return RuntimeResult(
-            plan=step1["plan"],
-            tradeoffs=step1["tradeoffs"],
-            verdict=step3["verdict"] or step1["verdict"],
+            plan=plan,
+            tradeoffs=tradeoffs,
+            verdict=verdict,
             usage=sum(usage_accum, Usage()),
+            effort=resolved,
         )
 
     async def generate(
-        self, *, task: str, context: Context, max_tokens: int | None = None
+        self,
+        *,
+        task: str,
+        context: Context,
+        max_tokens: int | None = None,
+        effort: str | None = None,
     ) -> RuntimeResult:
         cfg = current()
         budget = max_tokens if max_tokens is not None else cfg.max_tokens
         system = _build_system(context)
         usage_accum: list[Usage] = []
 
+        resolved = await self._resolve_effort(
+            task=task, system=system, budget=budget,
+            usage_accum=usage_accum, effort=effort,
+        )
         messages: list[dict[str, Any]] = [
             {"role": "user", "content": current_plan().format(task=task)},
         ]
-        step1 = await self._step(
-            system=system,
-            messages=messages,
-            max_tokens=budget,
-            usage_accum=usage_accum,
-            required_tags=["plan", "tradeoffs", "verdict"],
+        plan, tradeoffs, verdict = await self._run_plan_phase(
+            system=system, messages=messages, budget=budget,
+            usage_accum=usage_accum, effort=resolved,
         )
 
         messages.append({"role": "user", "content": current_draft()})
@@ -152,12 +257,13 @@ class AsyncLiteRuntime:
         )
 
         return RuntimeResult(
-            plan=step1["plan"],
-            tradeoffs=step1["tradeoffs"],
-            verdict=step3["verdict"] or step1["verdict"],
+            plan=plan,
+            tradeoffs=tradeoffs,
+            verdict=step3["verdict"] or verdict,
             code=step2["code"],
             defense=step3["defense"],
             usage=sum(usage_accum, Usage()),
+            effort=resolved,
         )
 
 
@@ -169,14 +275,24 @@ class AsyncCloudRuntime:
         self._model = model
 
     async def reason(
-        self, *, task: str, context: Context, max_tokens: int | None = None
+        self,
+        *,
+        task: str,
+        context: Context,
+        max_tokens: int | None = None,
+        effort: str | None = None,
     ) -> RuntimeResult:
         raise CloudRuntimeNotAvailable(
             "Cloud runtime is coming soon. Use runtime='lite' (default) for now."
         )
 
     async def generate(
-        self, *, task: str, context: Context, max_tokens: int | None = None
+        self,
+        *,
+        task: str,
+        context: Context,
+        max_tokens: int | None = None,
+        effort: str | None = None,
     ) -> RuntimeResult:
         raise CloudRuntimeNotAvailable(
             "Cloud runtime is coming soon. Use runtime='lite' (default) for now."
