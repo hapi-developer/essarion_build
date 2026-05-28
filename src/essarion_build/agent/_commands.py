@@ -32,7 +32,7 @@ _HELP_GROUPS: list[tuple[str, list[str]]] = [
     ("models & cost", ["/model", "/escalate", "/budget", "/cost", "/stream"]),
     ("skills & memory", ["/skills", "/remember", "/forget"]),
     ("project & files", ["/cd", "/pwd"]),
-    ("changes & verify", ["/diff", "/undo", "/commit", "/verify"]),
+    ("changes & verify", ["/diff", "/undo", "/commit", "/verify", "/lint"]),
     ("background", ["/bg"]),
     ("safety", ["/yolo"]),
     ("help", ["/help"]),
@@ -350,6 +350,66 @@ def _cmd_verify(console: Console, session: Session, args: str) -> CommandResult:
     style = "ok" if result.ok else "err"
     console.print(
         f"[{style}]{'PASS' if result.ok else 'FAIL'}[/{style}] "
+        f"[meta]exit={result.exit_code}[/meta]"
+    )
+    if result.head.strip():
+        from rich.panel import Panel
+
+        console.print(Panel(result.head, border_style=style, padding=(0, 1)))
+    return "continue"
+
+
+def _cmd_lint(console: Console, session: Session, args: str) -> CommandResult:
+    """Run a linter against the session's touched files (or `args`).
+
+    Auto-detects: ruff/flake8 for Python, eslint for JS/TS, gofmt -l for
+    Go, clippy for Rust. Falls back to /verify when nothing matches.
+    """
+    import shutil
+    from pathlib import Path
+
+    from ._changes import current_changelog
+    from ._verify import run_check
+
+    arg = args.strip()
+    if arg:
+        files = arg.split()
+    else:
+        files = current_changelog().files_touched()
+    if not files:
+        console.print(
+            "[meta](no files to lint — pass paths or make some agent changes first)[/meta]"
+        )
+        return "continue"
+
+    first = files[0]
+    cwd = Path(session.cwd)
+    cmd: str | None = None
+    if first.endswith(".py"):
+        for cand in ("ruff check", "flake8"):
+            if shutil.which(cand.split()[0]):
+                cmd = f"{cand} {' '.join(files)}"
+                break
+    elif first.endswith((".ts", ".tsx", ".js", ".jsx")):
+        if shutil.which("eslint"):
+            cmd = f"eslint {' '.join(files)}"
+        elif (cwd / "node_modules" / ".bin" / "eslint").exists():
+            cmd = f"./node_modules/.bin/eslint {' '.join(files)}"
+    elif first.endswith(".go"):
+        cmd = f"gofmt -l {' '.join(files)}"
+    elif first.endswith(".rs"):
+        cmd = "cargo clippy --quiet"
+
+    if cmd is None:
+        console.print("[meta]no linter detected; falling back to /verify[/meta]")
+        return _cmd_verify(console, session, "")
+
+    console.print(f"[meta]running:[/meta] [key]{cmd}[/key]")
+    with console.status("[brand]linting…[/brand]"):
+        result = run_check(cmd, cwd=session.cwd)
+    style = "ok" if result.ok else "err"
+    console.print(
+        f"[{style}]{'CLEAN' if result.ok else 'ISSUES'}[/{style}] "
         f"[meta]exit={result.exit_code}[/meta]"
     )
     if result.head.strip():
@@ -866,6 +926,7 @@ COMMANDS: dict[str, tuple[Callable, str]] = {
     "/remember": (_cmd_remember, "show or add a fact to project memory"),
     "/forget": (_cmd_forget, "remove fact(s) from project memory"),
     "/verify": (_cmd_verify, "run the project's check command (tests/lint)"),
+    "/lint": (_cmd_lint, "lint the session's touched files (auto-detects ruff/eslint/clippy/gofmt)"),
     "/diff": (_cmd_diff, "show every change made this session"),
     "/undo": (_cmd_undo, "revert the most recent agent-applied change"),
     "/commit": (_cmd_commit, "git-commit the session's changes"),
@@ -887,6 +948,15 @@ COMMANDS: dict[str, tuple[Callable, str]] = {
     "/version": (_cmd_version, "show the SDK version"),
 }
 
+
+
+def _did_you_mean(unknown: str) -> str | None:
+    """Suggest the closest slash command to `unknown`."""
+    import difflib
+
+    candidates = list(COMMANDS.keys())
+    matches = difflib.get_close_matches(unknown, candidates, n=1, cutoff=0.6)
+    return matches[0] if matches else None
 
 
 def _try_custom_command(
@@ -940,7 +1010,14 @@ def dispatch(console: Console, session: Session, line: str) -> CommandResult | N
     custom = _try_custom_command(console, session, cmd, args)
     if custom is not None:
         return custom
-    console.print(
-        f"[err]unknown command {cmd}[/err]  [hint]/help to list them[/hint]"
-    )
+    suggestion = _did_you_mean(cmd)
+    if suggestion:
+        console.print(
+            f"[err]unknown command {cmd}[/err]  "
+            f"[hint]did you mean [key]{suggestion}[/key]?[/hint]"
+        )
+    else:
+        console.print(
+            f"[err]unknown command {cmd}[/err]  [hint]/help to list them[/hint]"
+        )
     return "continue"
