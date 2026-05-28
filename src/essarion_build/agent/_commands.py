@@ -360,19 +360,16 @@ def _cmd_verify(console: Console, session: Session, args: str) -> CommandResult:
 
 
 def _cmd_diff(console: Console, session: Session, args: str) -> CommandResult:
-    """Show every file change the agent made this session."""
+    """Show every file change the agent made this session, one panel per file."""
     from ._changes import current_changelog
-    from ._ui import render_diff
+    from ._diff_render import render_diff_pretty
 
     log = current_changelog()
     body = log.diff()
     if not body.strip():
         console.print("[meta](no changes this session)[/meta]")
         return "continue"
-    render_diff(console, body)
-    console.print(
-        f"[meta]files touched: {', '.join(log.files_touched()) or '(none)'}[/meta]"
-    )
+    render_diff_pretty(console, body)
     return "continue"
 
 
