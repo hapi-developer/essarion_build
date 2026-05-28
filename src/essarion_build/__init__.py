@@ -2,17 +2,49 @@
 
 Bring your own model provider; the SDK provides the reasoning loop, the
 grounding context (codebase, docs, software-dev skills), and the structured
-outputs. v0 ships with OpenRouter as the default provider (cheap-model
-friendly) and Anthropic as an alternative.
+outputs. v0.3 ships:
+
+- 6 providers (OpenRouter default, plus Anthropic, OpenAI, Gemini, Ollama, Stub)
+- sync API: `reason()`, `generate()`
+- async API: `areason()`, `agenerate()`
+- streaming: `stream_reason()`, `stream_generate()`
+- multi-turn: `Conversation`
+- response cache: `ResponseCache`, `CachingProvider`
+- high-level workflows: `review`, `fix_bug`, `write_tests`, `refactor`, `docs`
+- custom providers and custom skills
+- CLI: `essarion-build`
 """
 
+from ._async_api import agenerate, areason
+from ._async_providers import (
+    AsyncProvider,
+    AsyncStubProvider,
+    build_async_provider,
+    register_async_provider,
+    unregister_async_provider,
+)
+from ._async_runtime import AsyncLiteRuntime, AsyncRuntime, select_async_runtime
+from ._cache import CachingProvider, ResponseCache
 from ._config import configure
-from ._context import Context
+from ._context import Context, Diff
+from ._conversation import Conversation, ConversationTurn
 from ._decorators import ReasonedFunction, list_reasoned, reasoned
 from ._generate import Generation, generate
-from ._providers import Usage
+from ._providers import (
+    Provider,
+    StreamChunk,
+    StreamingProvider,
+    StubProvider,
+    Usage,
+    build_provider,
+    list_providers,
+    register_provider,
+    unregister_provider,
+)
 from ._reasoning import Reasoning, reason
-from ._skills import list_skills
+from ._runtime import LiteRuntime, Runtime, select_runtime
+from ._skills import list_skills, load_skill
+from ._streaming import ReasoningEvent, stream_generate, stream_reason
 from .exceptions import (
     CloudRuntimeNotAvailable,
     ContextError,
@@ -26,20 +58,59 @@ from .exceptions import (
     ReasoningFormatError,
 )
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 __all__ = [
+    # Core types
     "Context",
+    "Diff",
     "Reasoning",
     "Generation",
     "ReasonedFunction",
     "Usage",
+    "Provider",
+    "StreamChunk",
+    "StreamingProvider",
+    "AsyncProvider",
+    "Conversation",
+    "ConversationTurn",
+    "ReasoningEvent",
+    # Sync API
     "reason",
     "generate",
+    "stream_reason",
+    "stream_generate",
+    # Async API
+    "areason",
+    "agenerate",
+    # Decorators
     "reasoned",
     "list_reasoned",
+    # Skills / providers / config
     "list_skills",
+    "load_skill",
+    "list_providers",
+    "register_provider",
+    "unregister_provider",
+    "register_async_provider",
+    "unregister_async_provider",
     "configure",
+    # Cache
+    "ResponseCache",
+    "CachingProvider",
+    # Stub provider (for users' tests)
+    "StubProvider",
+    "AsyncStubProvider",
+    # Runtimes (mostly internal, exposed for power users)
+    "Runtime",
+    "AsyncRuntime",
+    "LiteRuntime",
+    "AsyncLiteRuntime",
+    "select_runtime",
+    "select_async_runtime",
+    "build_provider",
+    "build_async_provider",
+    # Exceptions
     "EssarionError",
     "CloudRuntimeNotAvailable",
     "ProviderNotAvailable",

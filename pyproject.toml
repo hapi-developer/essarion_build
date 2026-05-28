@@ -4,23 +4,27 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "essarion-build"
-version = "0.2.0"
-description = "BYOK reasoning amplification SDK: Context, reason(), generate() for any LLM."
+version = "0.3.0"
+description = "BYOK reasoning amplification SDK: Context, reason(), generate(), workflows, streaming, async — for any LLM."
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.11"
 authors = [
     { name = "Essarion" },
 ]
-keywords = ["llm", "reasoning", "anthropic", "claude", "coding-agent", "byok"]
+keywords = [
+    "llm", "reasoning", "anthropic", "claude", "openai", "gemini", "ollama",
+    "coding-agent", "byok", "sdk", "streaming",
+]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: Apache Software License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
@@ -32,7 +36,11 @@ dependencies = [
 [project.optional-dependencies]
 test = [
     "pytest>=8",
+    "pytest-asyncio>=0.24",
 ]
+
+[project.scripts]
+essarion-build = "essarion_build.cli:main"
 
 [project.urls]
 Homepage = "https://essarion.com"
@@ -45,3 +53,6 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 essarion_build = ["py.typed", "skills/*.md"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

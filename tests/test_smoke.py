@@ -44,7 +44,7 @@ from essarion_build._runtime import LiteRuntime, _extract_tag, select_runtime
 # -------------------- import / version / defaults --------------------
 
 def test_version() -> None:
-    assert essarion_build.__version__ == "0.2.0"
+    assert essarion_build.__version__ == "0.3.0"
 
 
 def test_imports_clean() -> None:
@@ -413,8 +413,8 @@ def test_cloud_runtime_raises() -> None:
 
 def test_provider_not_available() -> None:
     with pytest.raises(ProviderNotAvailable) as exc:
-        build_provider(name="gemini", api_key="x", model="x")
-    assert "gemini" in str(exc.value)
+        build_provider(name="palmyra-mistral-xyz", api_key="x", model="x")
+    assert "palmyra-mistral-xyz" in str(exc.value)
     assert "openrouter" in str(exc.value)
 
 

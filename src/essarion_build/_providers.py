@@ -1,22 +1,26 @@
 """Internal Provider seam.
 
-Not re-exported at the package level. v0 ships two concrete providers:
+Not re-exported at the package level (except the `Stub` provider, which is
+re-exported under `essarion_build.testing` so users can write tests against
+their own essarion-build workflows).
 
-- **OpenRouter** (default) — talks to ~any model via a single OpenAI-compatible
-  endpoint. The cheap-default story: amplify a cheap coding model's reasoning
-  rather than be a wrapper for an expensive one.
-- **Anthropic** — talks directly to the Claude API for users who already have
-  an `ANTHROPIC_API_KEY`.
+v0.3 ships these providers:
 
-Both are accessed via the same `Provider` protocol. v0.2 can add Gemini,
-local-OSS via Ollama, etc., without breaking the user-facing surface.
+- **openrouter** (default) — OpenAI-compatible. The cheap-default story.
+- **anthropic** — direct Claude API. Uses prompt caching.
+- **openai** — direct OpenAI API.
+- **gemini** — Google Gemini.
+- **ollama** — local OSS models via Ollama. Free / private. No key required.
+- **stub** — in-memory, scripted responses. For tests.
+
+Users can register their own providers via `register_provider(name, factory)`.
 """
 
 from __future__ import annotations
 
 import os
 import time
-from typing import Any, Protocol
+from typing import Any, Callable, Iterator, Protocol
 
 import httpx
 from pydantic import BaseModel
@@ -59,6 +63,15 @@ class ProviderResponse(BaseModel):
     usage: Usage
 
 
+class StreamChunk(BaseModel):
+    """A streamed delta from Provider.stream(). `text` is the partial token(s),
+    `usage` is non-zero only on the final chunk."""
+
+    text: str = ""
+    usage: Usage = Usage()
+    done: bool = False
+
+
 # HTTP retry policy for transient failures. Two retries with short exponential
 # backoff — enough to absorb a single 429 / 502 blip without papering over real
 # outages or driving up cost on cheap models.
@@ -84,6 +97,23 @@ class Provider(Protocol):
         messages: list[dict[str, Any]],
         max_tokens: int,
     ) -> ProviderResponse:
+        ...
+
+
+class StreamingProvider(Provider, Protocol):
+    """Optional capability: emit a stream of StreamChunk events.
+
+    Providers that implement this can be driven by `stream_reason`/`stream_generate`.
+    Providers that don't only support the buffered `complete()` path.
+    """
+
+    def stream(
+        self,
+        *,
+        system: str,
+        messages: list[dict[str, Any]],
+        max_tokens: int,
+    ) -> Iterator[StreamChunk]:
         ...
 
 
@@ -168,8 +198,71 @@ class _AnthropicProvider:
             )
         return ProviderResponse(text="".join(out), usage=usage)
 
+    def stream(
+        self,
+        *,
+        system: str,
+        messages: list[dict[str, Any]],
+        max_tokens: int,
+    ) -> Iterator[StreamChunk]:
+        from anthropic import (
+            APIStatusError,
+            AuthenticationError,
+            RateLimitError,
+        )
+
+        try:
+            with self._client.messages.stream(
+                model=self.model,
+                max_tokens=max_tokens,
+                system=[
+                    {
+                        "type": "text",
+                        "text": system,
+                        "cache_control": {"type": "ephemeral"},
+                    }
+                ],
+                messages=messages,
+            ) as stream:
+                for text in stream.text_stream:
+                    yield StreamChunk(text=text)
+                final = stream.get_final_message()
+        except AuthenticationError as e:
+            raise ProviderAuthError(
+                f"Anthropic rejected the API key for model {self.model!r}: {e}"
+            ) from e
+        except RateLimitError as e:
+            raise ProviderRateLimitError(
+                f"Anthropic rate-limited the request for model {self.model!r}: {e}"
+            ) from e
+        except APIStatusError as e:
+            raise ProviderHTTPError(
+                f"Anthropic returned HTTP {e.status_code} for model {self.model!r}: {e}"
+            ) from e
+
+        usage_obj = getattr(final, "usage", None)
+        if usage_obj is None:
+            yield StreamChunk(done=True)
+            return
+        prompt = getattr(usage_obj, "input_tokens", 0) or 0
+        completion = getattr(usage_obj, "output_tokens", 0) or 0
+        cached_read = getattr(usage_obj, "cache_read_input_tokens", 0) or 0
+        cached_write = getattr(usage_obj, "cache_creation_input_tokens", 0) or 0
+        yield StreamChunk(
+            done=True,
+            usage=Usage(
+                prompt_tokens=prompt,
+                completion_tokens=completion,
+                total_tokens=prompt + completion,
+                cached_tokens=cached_read + cached_write,
+            ),
+        )
+
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+OPENAI_BASE_URL = "https://api.openai.com/v1"
+GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
+DEFAULT_OLLAMA_BASE_URL = "http://localhost:11434"
 
 
 def _sleep_backoff(attempt: int) -> None:
@@ -177,22 +270,23 @@ def _sleep_backoff(attempt: int) -> None:
     time.sleep(_BACKOFF_BASE_SECONDS * (2 ** attempt))
 
 
-class _OpenRouterProvider:
-    """Talks to OpenRouter's OpenAI-compatible chat completions endpoint.
+class _OpenAICompatibleProvider:
+    """Shared transport for OpenAI-compatible chat completions (OpenAI, OpenRouter).
 
-    Default provider in v0. OpenRouter routes to ~any model behind one API,
-    which keeps the SDK's BYOK story honest while staying cheap.
-
-    The HTTP client is created per `complete()` call so the provider never
-    leaks file descriptors when reason()/generate() raise mid-loop.
+    Subclasses override `_provider_label`, the base URL, and headers. The HTTP
+    client is per-call so file descriptors don't leak when the runtime raises
+    mid-loop.
     """
 
-    def __init__(self, *, api_key: str | None = None, model: str) -> None:
-        resolved_key = api_key or os.environ.get("OPENROUTER_API_KEY")
+    _provider_label: str = "openai-compatible"
+    _base_url: str = OPENAI_BASE_URL
+
+    def __init__(self, *, api_key: str | None, model: str, env_var: str) -> None:
+        resolved_key = api_key or os.environ.get(env_var)
         if not resolved_key:
             raise RuntimeError(
-                "OPENROUTER_API_KEY is not set. Pass api_key=... to configure() "
-                "or export OPENROUTER_API_KEY in your environment."
+                f"{env_var} is not set. Pass api_key=... to configure() "
+                f"or export {env_var} in your environment."
             )
         self._api_key = resolved_key
         self.model = model
@@ -201,10 +295,18 @@ class _OpenRouterProvider:
         return {
             "Authorization": f"Bearer {self._api_key}",
             "Content-Type": "application/json",
-            # OpenRouter encourages identifying the integration so models can
-            # be billed and rate-limited correctly.
-            "HTTP-Referer": "https://essarion.com",
-            "X-Title": "essarion-build",
+        }
+
+    def _build_body(
+        self, *, system: str, messages: list[dict[str, Any]], max_tokens: int
+    ) -> dict[str, Any]:
+        return {
+            "model": self.model,
+            "max_tokens": max_tokens,
+            "messages": [
+                {"role": "system", "content": system},
+                *messages,
+            ],
         }
 
     def complete(
@@ -214,18 +316,10 @@ class _OpenRouterProvider:
         messages: list[dict[str, Any]],
         max_tokens: int,
     ) -> ProviderResponse:
-        body = {
-            "model": self.model,
-            "max_tokens": max_tokens,
-            "messages": [
-                {"role": "system", "content": system},
-                *messages,
-            ],
-        }
-
+        body = self._build_body(system=system, messages=messages, max_tokens=max_tokens)
         last_error: Exception | None = None
         with httpx.Client(
-            base_url=OPENROUTER_BASE_URL,
+            base_url=self._base_url,
             timeout=httpx.Timeout(120.0),
             headers=self._headers(),
         ) as client:
@@ -238,7 +332,7 @@ class _OpenRouterProvider:
                         _sleep_backoff(attempt)
                         continue
                     raise ProviderHTTPError(
-                        f"OpenRouter network error for model {self.model!r}: {e}"
+                        f"{self._provider_label} network error for model {self.model!r}: {e}"
                     ) from e
 
                 if response.status_code in _RETRYABLE_STATUSES and attempt + 1 < _MAX_HTTP_ATTEMPTS:
@@ -247,41 +341,71 @@ class _OpenRouterProvider:
 
                 if response.status_code in (401, 403):
                     raise ProviderAuthError(
-                        f"OpenRouter rejected the API key (HTTP {response.status_code}) "
+                        f"{self._provider_label} rejected the API key (HTTP {response.status_code}) "
                         f"for model {self.model!r}: {response.text[:500]}"
                     )
                 if response.status_code == 429:
                     raise ProviderRateLimitError(
-                        f"OpenRouter rate-limited the request for model {self.model!r}: "
+                        f"{self._provider_label} rate-limited the request for model {self.model!r}: "
                         f"{response.text[:500]}"
                     )
                 if response.status_code >= 400:
                     raise ProviderHTTPError(
-                        f"OpenRouter returned HTTP {response.status_code} for model "
+                        f"{self._provider_label} returned HTTP {response.status_code} for model "
                         f"{self.model!r}: {response.text[:500]}"
                     )
 
-                return _parse_openrouter_response(response.json(), model=self.model)
+                return _parse_openai_compatible_response(
+                    response.json(), model=self.model, provider_label=self._provider_label
+                )
 
-        # Defensive: the loop above always returns or raises, but guard anyway.
         raise ProviderHTTPError(
-            f"OpenRouter network error for model {self.model!r}: {last_error}"
+            f"{self._provider_label} network error for model {self.model!r}: {last_error}"
         )
 
 
-def _parse_openrouter_response(data: dict[str, Any], *, model: str) -> ProviderResponse:
+class _OpenRouterProvider(_OpenAICompatibleProvider):
+    """OpenRouter — OpenAI-compatible router across many providers."""
+
+    _provider_label = "OpenRouter"
+    _base_url = OPENROUTER_BASE_URL
+
+    def __init__(self, *, api_key: str | None = None, model: str) -> None:
+        super().__init__(api_key=api_key, model=model, env_var="OPENROUTER_API_KEY")
+
+    def _headers(self) -> dict[str, str]:
+        h = super()._headers()
+        # OpenRouter encourages identifying the integration so models can
+        # be billed and rate-limited correctly.
+        h["HTTP-Referer"] = "https://essarion.com"
+        h["X-Title"] = "essarion-build"
+        return h
+
+
+class _OpenAIProvider(_OpenAICompatibleProvider):
+    """Direct-to-OpenAI provider for users who want to bypass OpenRouter."""
+
+    _provider_label = "OpenAI"
+    _base_url = OPENAI_BASE_URL
+
+    def __init__(self, *, api_key: str | None = None, model: str) -> None:
+        super().__init__(api_key=api_key, model=model, env_var="OPENAI_API_KEY")
+
+
+def _parse_openai_compatible_response(
+    data: dict[str, Any], *, model: str, provider_label: str = "OpenAI-compatible"
+) -> ProviderResponse:
     try:
         text = data["choices"][0]["message"]["content"] or ""
     except (KeyError, IndexError, TypeError) as e:
         raise ProviderResponseError(
-            f"OpenRouter returned an unexpected response shape for model {model!r}: {data!r}"
+            f"{provider_label} returned an unexpected response shape for model {model!r}: {data!r}"
         ) from e
 
     raw_usage = data.get("usage") or {}
     prompt = int(raw_usage.get("prompt_tokens", 0) or 0)
     completion = int(raw_usage.get("completion_tokens", 0) or 0)
     total = int(raw_usage.get("total_tokens", prompt + completion) or 0)
-    # OpenRouter sometimes nests cached counts inside prompt_tokens_details.
     cached = 0
     details = raw_usage.get("prompt_tokens_details") or {}
     if isinstance(details, dict):
@@ -295,13 +419,324 @@ def _parse_openrouter_response(data: dict[str, Any], *, model: str) -> ProviderR
     return ProviderResponse(text=text, usage=usage)
 
 
+# Backwards compat alias used by tests/users that imported the old name.
+_parse_openrouter_response = _parse_openai_compatible_response
+
+
+class _GeminiProvider:
+    """Google Gemini direct provider.
+
+    Uses Gemini's REST API. We collapse the multi-turn 'contents' shape onto
+    the same {role, content} interface the rest of the SDK uses. Roles
+    "assistant" → "model" (Gemini's wire format).
+    """
+
+    def __init__(self, *, api_key: str | None = None, model: str) -> None:
+        resolved_key = api_key or os.environ.get("GEMINI_API_KEY") or os.environ.get(
+            "GOOGLE_API_KEY"
+        )
+        if not resolved_key:
+            raise RuntimeError(
+                "GEMINI_API_KEY is not set. Pass api_key=... to configure() "
+                "or export GEMINI_API_KEY (or GOOGLE_API_KEY) in your environment."
+            )
+        self._api_key = resolved_key
+        self.model = model
+
+    def _build_body(
+        self, *, system: str, messages: list[dict[str, Any]], max_tokens: int
+    ) -> dict[str, Any]:
+        contents: list[dict[str, Any]] = []
+        for m in messages:
+            role = m["role"]
+            wire_role = "model" if role == "assistant" else "user"
+            contents.append(
+                {"role": wire_role, "parts": [{"text": m["content"]}]}
+            )
+        return {
+            "systemInstruction": {"parts": [{"text": system}]},
+            "contents": contents,
+            "generationConfig": {"maxOutputTokens": max_tokens},
+        }
+
+    def complete(
+        self,
+        *,
+        system: str,
+        messages: list[dict[str, Any]],
+        max_tokens: int,
+    ) -> ProviderResponse:
+        body = self._build_body(system=system, messages=messages, max_tokens=max_tokens)
+        path = f"/models/{self.model}:generateContent"
+        params = {"key": self._api_key}
+        last_error: Exception | None = None
+        with httpx.Client(
+            base_url=GEMINI_BASE_URL,
+            timeout=httpx.Timeout(120.0),
+            headers={"Content-Type": "application/json"},
+        ) as client:
+            for attempt in range(_MAX_HTTP_ATTEMPTS):
+                try:
+                    response = client.post(path, json=body, params=params)
+                except httpx.HTTPError as e:
+                    last_error = e
+                    if attempt + 1 < _MAX_HTTP_ATTEMPTS:
+                        _sleep_backoff(attempt)
+                        continue
+                    raise ProviderHTTPError(
+                        f"Gemini network error for model {self.model!r}: {e}"
+                    ) from e
+
+                if response.status_code in _RETRYABLE_STATUSES and attempt + 1 < _MAX_HTTP_ATTEMPTS:
+                    _sleep_backoff(attempt)
+                    continue
+
+                if response.status_code in (401, 403):
+                    raise ProviderAuthError(
+                        f"Gemini rejected the API key (HTTP {response.status_code}) "
+                        f"for model {self.model!r}: {response.text[:500]}"
+                    )
+                if response.status_code == 429:
+                    raise ProviderRateLimitError(
+                        f"Gemini rate-limited the request for model {self.model!r}: "
+                        f"{response.text[:500]}"
+                    )
+                if response.status_code >= 400:
+                    raise ProviderHTTPError(
+                        f"Gemini returned HTTP {response.status_code} for model "
+                        f"{self.model!r}: {response.text[:500]}"
+                    )
+
+                return _parse_gemini_response(response.json(), model=self.model)
+
+        raise ProviderHTTPError(
+            f"Gemini network error for model {self.model!r}: {last_error}"
+        )
+
+
+def _parse_gemini_response(data: dict[str, Any], *, model: str) -> ProviderResponse:
+    try:
+        parts = data["candidates"][0]["content"]["parts"]
+        text = "".join(p.get("text", "") for p in parts)
+    except (KeyError, IndexError, TypeError) as e:
+        raise ProviderResponseError(
+            f"Gemini returned an unexpected response shape for model {model!r}: {data!r}"
+        ) from e
+
+    usage_meta = data.get("usageMetadata") or {}
+    prompt = int(usage_meta.get("promptTokenCount", 0) or 0)
+    completion = int(usage_meta.get("candidatesTokenCount", 0) or 0)
+    total = int(usage_meta.get("totalTokenCount", prompt + completion) or 0)
+    cached = int(usage_meta.get("cachedContentTokenCount", 0) or 0)
+    return ProviderResponse(
+        text=text,
+        usage=Usage(
+            prompt_tokens=prompt,
+            completion_tokens=completion,
+            total_tokens=total,
+            cached_tokens=cached,
+        ),
+    )
+
+
+class _OllamaProvider:
+    """Local Ollama provider for OSS models (llama, qwen, mistral, …).
+
+    No API key required. Reads OLLAMA_BASE_URL or defaults to
+    http://localhost:11434.
+    """
+
+    def __init__(self, *, api_key: str | None = None, model: str) -> None:
+        # api_key is ignored (Ollama is unauthenticated by default) but kept
+        # in the signature for symmetry with build_provider().
+        del api_key
+        self._base_url = os.environ.get("OLLAMA_BASE_URL", DEFAULT_OLLAMA_BASE_URL)
+        self.model = model
+
+    def complete(
+        self,
+        *,
+        system: str,
+        messages: list[dict[str, Any]],
+        max_tokens: int,
+    ) -> ProviderResponse:
+        body = {
+            "model": self.model,
+            "stream": False,
+            "options": {"num_predict": max_tokens},
+            "messages": [
+                {"role": "system", "content": system},
+                *messages,
+            ],
+        }
+        last_error: Exception | None = None
+        with httpx.Client(
+            base_url=self._base_url,
+            timeout=httpx.Timeout(300.0),  # local OSS models can be slow
+        ) as client:
+            for attempt in range(_MAX_HTTP_ATTEMPTS):
+                try:
+                    response = client.post("/api/chat", json=body)
+                except httpx.HTTPError as e:
+                    last_error = e
+                    if attempt + 1 < _MAX_HTTP_ATTEMPTS:
+                        _sleep_backoff(attempt)
+                        continue
+                    raise ProviderHTTPError(
+                        f"Ollama network error for model {self.model!r} at "
+                        f"{self._base_url}: {e}"
+                    ) from e
+
+                if response.status_code in _RETRYABLE_STATUSES and attempt + 1 < _MAX_HTTP_ATTEMPTS:
+                    _sleep_backoff(attempt)
+                    continue
+
+                if response.status_code >= 400:
+                    raise ProviderHTTPError(
+                        f"Ollama returned HTTP {response.status_code} for model "
+                        f"{self.model!r}: {response.text[:500]}"
+                    )
+
+                return _parse_ollama_response(response.json(), model=self.model)
+
+        raise ProviderHTTPError(
+            f"Ollama network error for model {self.model!r}: {last_error}"
+        )
+
+
+def _parse_ollama_response(data: dict[str, Any], *, model: str) -> ProviderResponse:
+    try:
+        text = data["message"]["content"] or ""
+    except (KeyError, TypeError) as e:
+        raise ProviderResponseError(
+            f"Ollama returned an unexpected response shape for model {model!r}: {data!r}"
+        ) from e
+    prompt = int(data.get("prompt_eval_count", 0) or 0)
+    completion = int(data.get("eval_count", 0) or 0)
+    return ProviderResponse(
+        text=text,
+        usage=Usage(
+            prompt_tokens=prompt,
+            completion_tokens=completion,
+            total_tokens=prompt + completion,
+        ),
+    )
+
+
+class StubProvider:
+    """In-memory provider with scripted responses. Public — for tests.
+
+    Users wiring `essarion_build` into their own systems can use this to write
+    deterministic tests against `reason()` / `generate()` without hitting any
+    real provider. Each `complete()` call pops the next scripted response.
+
+    >>> stub = StubProvider(responses=[
+    ...     "<plan>1</plan><tradeoffs>-</tradeoffs><verdict>ship</verdict>",
+    ...     "<verdict>ship</verdict>",
+    ... ])
+    >>> from essarion_build import reason, Context
+    >>> from essarion_build._runtime import LiteRuntime
+    >>> r = reason("task", context=Context(), _runtime=LiteRuntime(stub))
+    >>> stub.call_count
+    2
+    """
+
+    def __init__(
+        self,
+        *,
+        responses: list[str | ProviderResponse] | None = None,
+        model: str = "stub-model",
+    ) -> None:
+        self.model = model
+        self._responses: list[ProviderResponse] = []
+        for r in responses or []:
+            self._responses.append(self._coerce(r))
+        self.calls: list[dict[str, Any]] = []
+
+    @staticmethod
+    def _coerce(r: str | ProviderResponse) -> ProviderResponse:
+        if isinstance(r, ProviderResponse):
+            return r
+        return ProviderResponse(text=r, usage=Usage())
+
+    @property
+    def call_count(self) -> int:
+        return len(self.calls)
+
+    def push(self, response: str | ProviderResponse) -> None:
+        """Append a scripted response to the queue."""
+        self._responses.append(self._coerce(response))
+
+    def complete(
+        self,
+        *,
+        system: str,
+        messages: list[dict[str, Any]],
+        max_tokens: int,
+    ) -> ProviderResponse:
+        if not self._responses:
+            raise ProviderResponseError(
+                "StubProvider exhausted: no more scripted responses. "
+                f"Already served {self.call_count} call(s)."
+            )
+        self.calls.append(
+            {"system": system, "messages": list(messages), "max_tokens": max_tokens}
+        )
+        return self._responses.pop(0)
+
+
+# Registry of provider constructors. Public-facing names → factory(api_key, model).
+ProviderFactory = Callable[..., Provider]
+
+_PROVIDER_REGISTRY: dict[str, ProviderFactory] = {}
+
+
+def register_provider(name: str, factory: ProviderFactory) -> None:
+    """Register a custom provider by name.
+
+    The factory must accept `api_key=None` and `model=...` kwargs and return
+    an object that exposes a `model` attribute and a `complete()` method
+    matching the `Provider` protocol.
+
+    Calling this with a built-in provider name overrides the built-in.
+    """
+    _PROVIDER_REGISTRY[name] = factory
+
+
+def unregister_provider(name: str) -> None:
+    """Remove a previously registered custom provider. No-op if unknown."""
+    _PROVIDER_REGISTRY.pop(name, None)
+
+
+def list_providers() -> list[str]:
+    """All provider names recognized by build_provider() (built-in + custom)."""
+    builtins = ["openrouter", "anthropic", "openai", "gemini", "ollama", "stub"]
+    custom = [n for n in _PROVIDER_REGISTRY if n not in builtins]
+    return sorted(builtins + custom)
+
+
 def build_provider(*, name: str, api_key: str | None, model: str) -> Provider:
-    """Construct a provider by name. v0 knows 'openrouter' (default) and 'anthropic'."""
+    """Construct a provider by name.
+
+    v0.3 built-ins: openrouter (default), anthropic, openai, gemini, ollama, stub.
+    Custom providers registered via `register_provider()` are honored too.
+    """
+    if name in _PROVIDER_REGISTRY:
+        return _PROVIDER_REGISTRY[name](api_key=api_key, model=model)
     if name == "openrouter":
         return _OpenRouterProvider(api_key=api_key, model=model)
     if name == "anthropic":
         return _AnthropicProvider(api_key=api_key, model=model)
+    if name == "openai":
+        return _OpenAIProvider(api_key=api_key, model=model)
+    if name == "gemini":
+        return _GeminiProvider(api_key=api_key, model=model)
+    if name == "ollama":
+        return _OllamaProvider(api_key=api_key, model=model)
+    if name == "stub":
+        return StubProvider(model=model)
     raise ProviderNotAvailable(
-        f"Provider {name!r} is not available in v0. "
-        "Supported: 'openrouter' (default), 'anthropic'."
+        f"Provider {name!r} is not available. "
+        f"Built-in: {', '.join(list_providers())}. "
+        "Register a custom provider with essarion_build.register_provider()."
     )
