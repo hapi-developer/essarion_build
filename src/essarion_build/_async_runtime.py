@@ -11,10 +11,10 @@ from ._async_providers import AsyncProvider, build_async_provider
 from ._config import current
 from ._context import Context
 from ._prompts import (
-    DRAFT_INSTRUCTION,
-    PLAN_INSTRUCTION,
-    SELFCHECK_GENERATE_INSTRUCTION,
-    SELFCHECK_REASON_INSTRUCTION,
+    current_draft,
+    current_plan,
+    current_selfcheck_generate,
+    current_selfcheck_reason,
 )
 from ._providers import Usage
 from ._runtime import RuntimeResult, _build_system, _extract_tag, _repair_prompt
@@ -88,7 +88,7 @@ class AsyncLiteRuntime:
         usage_accum: list[Usage] = []
 
         messages: list[dict[str, Any]] = [
-            {"role": "user", "content": PLAN_INSTRUCTION.format(task=task)},
+            {"role": "user", "content": current_plan().format(task=task)},
         ]
         step1 = await self._step(
             system=system,
@@ -98,7 +98,7 @@ class AsyncLiteRuntime:
             required_tags=["plan", "tradeoffs", "verdict"],
         )
 
-        messages.append({"role": "user", "content": SELFCHECK_REASON_INSTRUCTION})
+        messages.append({"role": "user", "content": current_selfcheck_reason()})
         step3 = await self._step(
             system=system,
             messages=messages,
@@ -123,7 +123,7 @@ class AsyncLiteRuntime:
         usage_accum: list[Usage] = []
 
         messages: list[dict[str, Any]] = [
-            {"role": "user", "content": PLAN_INSTRUCTION.format(task=task)},
+            {"role": "user", "content": current_plan().format(task=task)},
         ]
         step1 = await self._step(
             system=system,
@@ -133,7 +133,7 @@ class AsyncLiteRuntime:
             required_tags=["plan", "tradeoffs", "verdict"],
         )
 
-        messages.append({"role": "user", "content": DRAFT_INSTRUCTION})
+        messages.append({"role": "user", "content": current_draft()})
         step2 = await self._step(
             system=system,
             messages=messages,
@@ -142,7 +142,7 @@ class AsyncLiteRuntime:
             required_tags=["code"],
         )
 
-        messages.append({"role": "user", "content": SELFCHECK_GENERATE_INSTRUCTION})
+        messages.append({"role": "user", "content": current_selfcheck_generate()})
         step3 = await self._step(
             system=system,
             messages=messages,

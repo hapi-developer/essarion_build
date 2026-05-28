@@ -22,10 +22,10 @@ from pydantic import BaseModel, Field
 from ._config import current
 from ._context import Context
 from ._prompts import (
-    DRAFT_INSTRUCTION,
-    PLAN_INSTRUCTION,
-    SELFCHECK_GENERATE_INSTRUCTION,
-    SELFCHECK_REASON_INSTRUCTION,
+    current_draft,
+    current_plan,
+    current_selfcheck_generate,
+    current_selfcheck_reason,
 )
 from ._providers import Provider, Usage, build_provider
 from ._runtime import _build_system, _extract_tag, _repair_prompt
@@ -154,7 +154,7 @@ def stream_reason(
     budget = max_tokens if max_tokens is not None else cfg.max_tokens
     system = _build_system(ctx)
     messages: list[dict] = [
-        {"role": "user", "content": PLAN_INSTRUCTION.format(task=task)}
+        {"role": "user", "content": current_plan().format(task=task)}
     ]
     total_usage = Usage()
     plan_tags: dict[str, str] = {}
@@ -174,7 +174,7 @@ def stream_reason(
             total_usage = total_usage + ev.usage
         yield ev
 
-    messages.append({"role": "user", "content": SELFCHECK_REASON_INSTRUCTION})
+    messages.append({"role": "user", "content": current_selfcheck_reason()})
     for ev in _stream_phase(
         provider=prov,
         system=system,
@@ -222,7 +222,7 @@ def stream_generate(
     budget = max_tokens if max_tokens is not None else cfg.max_tokens
     system = _build_system(ctx)
     messages: list[dict] = [
-        {"role": "user", "content": PLAN_INSTRUCTION.format(task=task)}
+        {"role": "user", "content": current_plan().format(task=task)}
     ]
     total_usage = Usage()
     plan_tags: dict[str, str] = {}
@@ -243,7 +243,7 @@ def stream_generate(
             total_usage = total_usage + ev.usage
         yield ev
 
-    messages.append({"role": "user", "content": DRAFT_INSTRUCTION})
+    messages.append({"role": "user", "content": current_draft()})
     for ev in _stream_phase(
         provider=prov,
         system=system,
@@ -258,7 +258,7 @@ def stream_generate(
             total_usage = total_usage + ev.usage
         yield ev
 
-    messages.append({"role": "user", "content": SELFCHECK_GENERATE_INSTRUCTION})
+    messages.append({"role": "user", "content": current_selfcheck_generate()})
     for ev in _stream_phase(
         provider=prov,
         system=system,

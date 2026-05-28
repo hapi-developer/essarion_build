@@ -8,13 +8,14 @@ from typing import Any, Protocol
 from ._config import current
 from ._context import Context
 from ._prompts import (
-    DRAFT_INSTRUCTION,
-    PLAN_INSTRUCTION,
-    SELFCHECK_GENERATE_INSTRUCTION,
-    SELFCHECK_REASON_INSTRUCTION,
-    SYSTEM_PROMPT,
+    current_draft,
+    current_plan,
+    current_selfcheck_generate,
+    current_selfcheck_reason,
+    current_system,
 )
 from ._providers import Provider, Usage, build_provider
+from ._telemetry import emit
 from .exceptions import CloudRuntimeNotAvailable, ReasoningFormatError
 
 
@@ -26,9 +27,9 @@ def _extract_tag(text: str, tag: str) -> str:
 
 
 def _build_system(context: Context) -> str:
-    """Prepend the frozen system prompt with the rendered context block."""
+    """Prepend the system prompt with the rendered context block."""
     block = context.to_prompt_block()
-    return f"{SYSTEM_PROMPT}\n\n{block}"
+    return f"{current_system()}\n\n{block}"
 
 
 class RuntimeResult(dict[str, Any]):
@@ -89,6 +90,7 @@ class LiteRuntime:
         max_tokens: int,
         usage_accum: list[Usage],
         required_tags: list[str],
+        phase: str = "step",
     ) -> dict[str, str]:
         """One provider call + at most one tag-repair pass.
 
@@ -97,6 +99,7 @@ class LiteRuntime:
         the caller can continue the conversation. Raises ReasoningFormatError
         when the model fails to produce a tag even after the repair pass.
         """
+        emit("phase_call", phase=phase, model=self._provider.model)
         first = self._provider.complete(
             system=system, messages=messages, max_tokens=max_tokens
         )
@@ -106,8 +109,15 @@ class LiteRuntime:
         tags = {t: _extract_tag(first.text, t) for t in required_tags}
         missing = [t for t, body in tags.items() if not body]
         if not missing:
+            emit(
+                "phase_done",
+                phase=phase,
+                tags=list(tags),
+                usage=first.usage.model_dump(),
+            )
             return tags
 
+        emit("tag_repair_attempt", phase=phase, missing=missing)
         messages.append({"role": "user", "content": _repair_prompt(missing)})
         second = self._provider.complete(
             system=system, messages=messages, max_tokens=max_tokens
@@ -122,10 +132,18 @@ class LiteRuntime:
 
         still_missing = [t for t, body in tags.items() if not body]
         if still_missing:
+            emit("tag_repair_failed", phase=phase, missing=still_missing)
             raise ReasoningFormatError(
                 f"Model response is still missing required tag(s) after one "
                 f"repair pass: {still_missing}. Model={self._provider.model!r}."
             )
+        emit(
+            "phase_done",
+            phase=phase,
+            tags=list(tags),
+            repaired=True,
+            usage=(first.usage + second.usage).model_dump(),
+        )
         return tags
 
     def reason(
@@ -135,9 +153,10 @@ class LiteRuntime:
         budget = max_tokens if max_tokens is not None else cfg.max_tokens
         system = _build_system(context)
         usage_accum: list[Usage] = []
+        emit("loop_start", kind_of_loop="reason", model=self._provider.model)
 
         messages: list[dict[str, Any]] = [
-            {"role": "user", "content": PLAN_INSTRUCTION.format(task=task)},
+            {"role": "user", "content": current_plan().format(task=task)},
         ]
         step1 = self._step(
             system=system,
@@ -145,22 +164,26 @@ class LiteRuntime:
             max_tokens=budget,
             usage_accum=usage_accum,
             required_tags=["plan", "tradeoffs", "verdict"],
+            phase="plan",
         )
 
-        messages.append({"role": "user", "content": SELFCHECK_REASON_INSTRUCTION})
+        messages.append({"role": "user", "content": current_selfcheck_reason()})
         step3 = self._step(
             system=system,
             messages=messages,
             max_tokens=budget,
             usage_accum=usage_accum,
             required_tags=["verdict"],
+            phase="selfcheck",
         )
 
+        total = sum(usage_accum, Usage())
+        emit("loop_done", kind_of_loop="reason", usage=total.model_dump())
         return RuntimeResult(
             plan=step1["plan"],
             tradeoffs=step1["tradeoffs"],
             verdict=step3["verdict"] or step1["verdict"],
-            usage=sum(usage_accum, Usage()),
+            usage=total,
         )
 
     def generate(
@@ -170,9 +193,10 @@ class LiteRuntime:
         budget = max_tokens if max_tokens is not None else cfg.max_tokens
         system = _build_system(context)
         usage_accum: list[Usage] = []
+        emit("loop_start", kind_of_loop="generate", model=self._provider.model)
 
         messages: list[dict[str, Any]] = [
-            {"role": "user", "content": PLAN_INSTRUCTION.format(task=task)},
+            {"role": "user", "content": current_plan().format(task=task)},
         ]
         step1 = self._step(
             system=system,
@@ -180,33 +204,38 @@ class LiteRuntime:
             max_tokens=budget,
             usage_accum=usage_accum,
             required_tags=["plan", "tradeoffs", "verdict"],
+            phase="plan",
         )
 
-        messages.append({"role": "user", "content": DRAFT_INSTRUCTION})
+        messages.append({"role": "user", "content": current_draft()})
         step2 = self._step(
             system=system,
             messages=messages,
             max_tokens=budget,
             usage_accum=usage_accum,
             required_tags=["code"],
+            phase="draft",
         )
 
-        messages.append({"role": "user", "content": SELFCHECK_GENERATE_INSTRUCTION})
+        messages.append({"role": "user", "content": current_selfcheck_generate()})
         step3 = self._step(
             system=system,
             messages=messages,
             max_tokens=budget,
             usage_accum=usage_accum,
             required_tags=["verdict", "defense"],
+            phase="selfcheck",
         )
 
+        total = sum(usage_accum, Usage())
+        emit("loop_done", kind_of_loop="generate", usage=total.model_dump())
         return RuntimeResult(
             plan=step1["plan"],
             tradeoffs=step1["tradeoffs"],
             verdict=step3["verdict"] or step1["verdict"],
             code=step2["code"],
             defense=step3["defense"],
-            usage=sum(usage_accum, Usage()),
+            usage=total,
         )
 
 

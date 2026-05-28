@@ -33,6 +33,7 @@ from ._decorators import ReasonedFunction, list_reasoned, reasoned
 from ._generate import Generation, generate
 from ._providers import (
     Provider,
+    ProviderResponse,
     StreamChunk,
     StreamingProvider,
     StubProvider,
@@ -45,7 +46,9 @@ from ._providers import (
 from ._reasoning import Reasoning, reason
 from ._runtime import LiteRuntime, Runtime, select_runtime
 from ._skills import list_skills, load_skill
+from ._prompts import configure_prompts, reset_prompts
 from ._streaming import ReasoningEvent, stream_generate, stream_reason
+from ._telemetry import TelemetryCallback, configure_telemetry
 from .exceptions import (
     CloudRuntimeNotAvailable,
     ContextError,
@@ -70,6 +73,7 @@ __all__ = [
     "ReasonedFunction",
     "Usage",
     "Provider",
+    "ProviderResponse",
     "StreamChunk",
     "StreamingProvider",
     "AsyncProvider",
@@ -104,6 +108,12 @@ __all__ = [
     # Cache
     "ResponseCache",
     "CachingProvider",
+    # Telemetry
+    "configure_telemetry",
+    "TelemetryCallback",
+    # Prompt overrides
+    "configure_prompts",
+    "reset_prompts",
     # Stub provider (for users' tests)
     "StubProvider",
     "AsyncStubProvider",

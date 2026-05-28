@@ -1,7 +1,12 @@
-"""Frozen system prompts for the LiteRuntime reasoning loop.
+"""System prompts for the LiteRuntime reasoning loop.
 
-Kept verbatim and module-level so the prompt prefix is byte-stable across calls;
-this is what makes prompt-caching work for the 3-step loop.
+Module-level so the prompt prefix is byte-stable across calls; this is what
+makes prompt-caching work for the 3-step loop.
+
+The defaults can be replaced at runtime via `configure_prompts(...)` for
+teams that want their own house style baked in. Per-call overrides are
+also supported via the `_prompts` kwarg on `Context.to_prompt_block()` —
+but most users should never need either.
 """
 
 SYSTEM_PROMPT = """You are essarion_build, a reasoning amplification layer for coding tasks.
@@ -64,3 +69,86 @@ Respond with exactly this XML structure and nothing else:
 <verdict>One paragraph: your refined verdict after the adversarial check. End with "ship" or "do not ship without resolving X".</verdict>
 <defense>One paragraph: why this change is safe to ship. Cite the specific guards (input validation, error handling, invariants) that make it safe. If you cannot defend it, say so and refer back to the verdict.</defense>
 """
+
+
+# Per-runtime prompt overrides. Set via `configure_prompts(...)`. Empty
+# string means "use the module default for this slot".
+_PROMPT_OVERRIDES: dict[str, str] = {}
+
+
+def configure_prompts(
+    *,
+    system: str | None = None,
+    plan: str | None = None,
+    draft: str | None = None,
+    selfcheck_reason: str | None = None,
+    selfcheck_generate: str | None = None,
+) -> None:
+    """Override the system / instruction prompts used by LiteRuntime.
+
+    Pass `None` for a slot to leave the default in place; pass `""` to
+    explicitly clear a prior override.
+
+    Use this when:
+    - your team has a "house voice" you want baked in
+    - the model behaves better with slightly different framing
+    - you're benchmarking prompt variants
+
+    Don't use this to add user-task content — that goes through Context.
+    """
+    if system is not None:
+        _PROMPT_OVERRIDES["system"] = system
+    if plan is not None:
+        _PROMPT_OVERRIDES["plan"] = plan
+    if draft is not None:
+        _PROMPT_OVERRIDES["draft"] = draft
+    if selfcheck_reason is not None:
+        _PROMPT_OVERRIDES["selfcheck_reason"] = selfcheck_reason
+    if selfcheck_generate is not None:
+        _PROMPT_OVERRIDES["selfcheck_generate"] = selfcheck_generate
+
+
+def reset_prompts() -> None:
+    """Clear every prompt override. After this call the SDK uses defaults."""
+    _PROMPT_OVERRIDES.clear()
+
+
+def _current(slot: str, default: str) -> str:
+    """Resolve a prompt slot: return override if set, otherwise default."""
+    return _PROMPT_OVERRIDES.get(slot) or default
+
+
+def current_system() -> str:
+    return _current("system", SYSTEM_PROMPT)
+
+
+def current_plan() -> str:
+    return _current("plan", PLAN_INSTRUCTION)
+
+
+def current_draft() -> str:
+    return _current("draft", DRAFT_INSTRUCTION)
+
+
+def current_selfcheck_reason() -> str:
+    return _current("selfcheck_reason", SELFCHECK_REASON_INSTRUCTION)
+
+
+def current_selfcheck_generate() -> str:
+    return _current("selfcheck_generate", SELFCHECK_GENERATE_INSTRUCTION)
+
+
+__all__ = [
+    "SYSTEM_PROMPT",
+    "PLAN_INSTRUCTION",
+    "DRAFT_INSTRUCTION",
+    "SELFCHECK_REASON_INSTRUCTION",
+    "SELFCHECK_GENERATE_INSTRUCTION",
+    "configure_prompts",
+    "reset_prompts",
+    "current_system",
+    "current_plan",
+    "current_draft",
+    "current_selfcheck_reason",
+    "current_selfcheck_generate",
+]
