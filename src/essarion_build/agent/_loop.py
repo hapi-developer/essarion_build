@@ -140,6 +140,7 @@ def _build_context(
     task: str, *, session: Session, cwd: Path, console
 ) -> tuple[Context, list[str], str]:
     """Build the Context for one turn. Returns (ctx, picks, reason_for_picks)."""
+    from ._inline_tools import _INLINE_ALLOW
     from ._memory import inject_into_context, load_memory
 
     ctx = Context()
@@ -152,6 +153,16 @@ def _build_context(
         inject_into_context(memory, ctx)
     except Exception:  # noqa: BLE001 - memory must never break a turn
         pass
+    # Inline tool manifest — short note telling the model which tools
+    # it can call during planning to read files / search code.
+    ctx.add_note(
+        "If you need to read code before planning, emit a "
+        "<tool_call name=\"NAME\">JSON args</tool_call> tag inside your <plan>. "
+        f"Read-only tools available: {', '.join(sorted(_INLINE_ALLOW))}. "
+        "The agent will run them and re-plan with the results in context. "
+        "Don't use this for write_file/run_shell/start_background — those "
+        "happen via the user-approved apply step."
+    )
     _autoload_files(task, cwd, ctx, console)
     return ctx, picks, why
 
@@ -185,29 +196,67 @@ def _looks_like_reject(verdict: str) -> bool:
 def _run_plan_phase(
     console, session: Session, ctx: Context, task: str, turn: TaskTurn
 ) -> Reasoning | None:
-    """Run reason() and render the plan panel. Returns the Reasoning or None on err."""
+    """Run reason() and render the plan panel. Returns the Reasoning or None on err.
+
+    If the model emits read-only `<tool_call>` tags inline (read_file,
+    grep, list_dir, find_files, glob), the agent executes them, folds
+    the results back into the context as notes, and re-plans. Loops up
+    to `_MAX_TOOL_ROUNDS` times.
+    """
+    from ._inline_tools import (
+        _MAX_TOOL_ROUNDS,
+        applied_results,
+        fold_into_context,
+        has_tool_calls,
+        tool_results_summary,
+    )
+
     _ui.render_phase_header(console, "plan")
-    with console.status(
-        "[brand]thinking…[/brand] [hint](plan → selfcheck)[/hint]",
-        spinner="dots",
-    ):
-        try:
-            r = reason(
-                task,
-                context=ctx,
-                _runtime=_make_runtime(session.provider, session.model),
-                max_tokens=session.max_tokens,
-            )
-        except _MissingKeyError as e:
-            console.print(f"[err]plan failed: missing API key[/err]")
-            console.print(f"[hint]{e}[/hint]")
-            console.print(
-                "[hint]export the key in your shell, or switch model with "
-                "`/model <provider>/<model>` (try `/model ollama/llama3.2` for local).[/hint]"
-            )
-            return None
-        except Exception as e:  # noqa: BLE001
-            console.print(f"[err]plan failed: {type(e).__name__}: {e}[/err]")
+
+    def _do_reason() -> Reasoning | None:
+        with console.status(
+            "[brand]thinking…[/brand] [hint](plan → selfcheck)[/hint]",
+            spinner="dots",
+        ):
+            try:
+                return reason(
+                    task,
+                    context=ctx,
+                    _runtime=_make_runtime(session.provider, session.model),
+                    max_tokens=session.max_tokens,
+                )
+            except _MissingKeyError as e:
+                console.print(f"[err]plan failed: missing API key[/err]")
+                console.print(f"[hint]{e}[/hint]")
+                console.print(
+                    "[hint]export the key in your shell, or switch model with "
+                    "`/model <provider>/<model>` (try `/model ollama/llama3.2` for local).[/hint]"
+                )
+                return None
+            except Exception as e:  # noqa: BLE001
+                console.print(f"[err]plan failed: {type(e).__name__}: {e}[/err]")
+                return None
+
+    r = _do_reason()
+    if r is None:
+        return None
+
+    # If the plan contains read-only tool calls, execute them and re-plan.
+    rounds = 0
+    while rounds < _MAX_TOOL_ROUNDS and has_tool_calls(r.plan):
+        _record_phase_usage(turn, session, r.usage)
+        with_results = applied_results(r.plan)
+        results = tool_results_summary(with_results)
+        if not results:
+            break
+        n = fold_into_context(ctx, results)
+        console.print(
+            f"[meta]ran[/meta] [brand]{len(results)}[/brand] [meta]tool call(s) inline; "
+            f"folded {n} result(s) into context, re-planning…[/meta]"
+        )
+        rounds += 1
+        r = _do_reason()
+        if r is None:
             return None
     _record_phase_usage(turn, session, r.usage)
     _ui.render_plan(console, r.plan, r.tradeoffs, r.verdict)
