@@ -33,7 +33,7 @@ def test_essarion_context_is_empty(essarion_context: Context) -> None:
 
 
 def test_essarion_skills_loads_all(essarion_skills: Context) -> None:
-    assert len(essarion_skills.builtin_skills) >= 50
+    assert len(essarion_skills.builtin_skills) >= 54
 
 
 def test_isolated_prompts_resets(isolated_prompts: None) -> None:

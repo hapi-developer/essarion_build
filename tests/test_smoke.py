@@ -117,6 +117,10 @@ EXPECTED_SKILLS = {
     "web_security",
     "build_systems",
     "code_search",
+    "code_with_llms",
+    "observability_practice",
+    "code_review_practice",
+    "agile_practice",
 }
 
 
