@@ -30,30 +30,12 @@ def test_conversation_records_each_turn() -> None:
         ]
     )
     conv = Conversation(context=Context())
-    # Inject the runtime by monkey-patching reason() via the underlying call.
-    # Conversation's own reason/generate must call through select_runtime, so
-    # we test by passing a runtime via the public per-call kwarg in reason().
-    # The cleanest path is to call reason()/generate() with _runtime through
-    # Conversation — but Conversation doesn't expose that. So we test the
-    # state-management behaviour instead by patching reason() at module level.
-    from essarion_build import _conversation
-
+    # Conversation.reason()/.generate() expose the `_runtime` test seam (same as
+    # the top-level reason()/generate()), so a stub-backed runtime drives the
+    # turns directly — no module-level monkeypatching required.
     rt = LiteRuntime(stub)
-
-    def fake_reason(task, **kwargs):
-        kwargs["_runtime"] = rt
-        from essarion_build._reasoning import reason as real_reason
-
-        return real_reason(task, **kwargs)
-
-    _conversation._reason = fake_reason  # type: ignore[attr-defined]
-    try:
-        r1 = conv.reason("design schema")
-        r2 = conv.reason("write migration")
-    finally:
-        from essarion_build._reasoning import reason as real_reason
-
-        _conversation._reason = real_reason  # type: ignore[attr-defined]
+    conv.reason("design schema", _runtime=rt)
+    conv.reason("write migration", _runtime=rt)
 
     assert len(conv.history) == 2
     assert conv.history[0].task == "design schema"
@@ -77,23 +59,7 @@ def test_conversation_usage_aggregates() -> None:
         ]
     )
     conv = Conversation(context=Context())
-    from essarion_build import _conversation
-
-    rt = LiteRuntime(stub)
-
-    def fake_reason(task, **kwargs):
-        kwargs["_runtime"] = rt
-        from essarion_build._reasoning import reason as real_reason
-
-        return real_reason(task, **kwargs)
-
-    _conversation._reason = fake_reason  # type: ignore[attr-defined]
-    try:
-        r = conv.reason("anything")
-    finally:
-        from essarion_build._reasoning import reason as real_reason
-
-        _conversation._reason = real_reason  # type: ignore[attr-defined]
+    r = conv.reason("anything", _runtime=LiteRuntime(stub))
 
     assert r.usage.total_tokens == 22
     assert conv.usage.total_tokens == 22

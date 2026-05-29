@@ -797,7 +797,21 @@ git diff main | essarion-build reason "review this change" -
 
 ## Testing your essarion-build code
 
-Wire `StubProvider` in for deterministic, no-network tests of your own workflows:
+For a zero-setup, no-network smoke test, just select the `stub` provider — it
+auto-answers every reasoning phase, so `reason()`, `generate()`, and
+`Conversation` work with no scripting and no API key:
+
+```python
+from essarion_build import configure, reason
+
+configure(provider="stub", model="test")   # or pass provider="stub" per call
+r = reason("add a retry decorator")          # works out of the box
+assert r.verdict                              # canned, well-formed output
+```
+
+When you want **deterministic** output to assert on, script the responses with
+an explicit `StubProvider` (strict: each call pops the next response, and
+running out raises so a miscount can't pass silently):
 
 ```python
 from essarion_build import Context, LiteRuntime, StubProvider, reason
@@ -812,7 +826,19 @@ def test_my_workflow():
     assert stub.call_count == 2
 ```
 
-Async sibling: `AsyncStubProvider` + `AsyncLiteRuntime`. See `essarion_build.testing` for helpers.
+The `run_with_stub` helper wires the runtime for you and works with the
+top-level functions *and* `Conversation`:
+
+```python
+from essarion_build import Conversation
+from essarion_build.testing import StubProvider, run_with_stub
+
+conv = Conversation()
+r = run_with_stub(stub, conv.reason, "design the schema")
+```
+
+Async sibling: `AsyncStubProvider` + `AsyncLiteRuntime` (and `arun_with_stub`).
+See `essarion_build.testing` for helpers.
 
 ## Error handling
 

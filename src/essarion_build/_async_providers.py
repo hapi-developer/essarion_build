@@ -25,6 +25,8 @@ from ._providers import (
     _parse_gemini_response,
     _parse_ollama_response,
     _parse_openai_compatible_response,
+    _stub_auto_text,
+    _stub_estimate_usage,
 )
 from .exceptions import (
     ProviderAuthError,
@@ -393,15 +395,24 @@ class _AsyncOllamaProvider:
 
 
 class AsyncStubProvider:
-    """Async counterpart to `StubProvider`. Public — for users' async tests."""
+    """Async counterpart to `StubProvider`. Public — for users' async tests.
+
+    Like `StubProvider`, supports a strict **scripted** mode (default) and an
+    **auto-respond** mode (``auto_respond=True``) that synthesizes a
+    well-formed response per phase once the scripted queue is empty.
+    ``build_async_provider(name="stub")`` / `configure(provider="stub")` use
+    auto-respond so async smoke tests work with no scripting.
+    """
 
     def __init__(
         self,
         *,
         responses: list[str | ProviderResponse] | None = None,
         model: str = "async-stub-model",
+        auto_respond: bool = False,
     ) -> None:
         self.model = model
+        self.auto_respond = auto_respond
         self._responses: list[ProviderResponse] = []
         for r in responses or []:
             self._responses.append(self._coerce(r))
@@ -420,6 +431,11 @@ class AsyncStubProvider:
     def push(self, response: str | ProviderResponse) -> None:
         self._responses.append(self._coerce(response))
 
+    def _record(self, system: str, messages: list[dict[str, Any]], max_tokens: int) -> None:
+        self.calls.append(
+            {"system": system, "messages": list(messages), "max_tokens": max_tokens}
+        )
+
     async def complete(
         self,
         *,
@@ -427,14 +443,23 @@ class AsyncStubProvider:
         messages: list[dict[str, Any]],
         max_tokens: int,
     ) -> ProviderResponse:
-        if not self._responses:
-            raise ProviderResponseError(
-                "AsyncStubProvider exhausted: no more scripted responses."
+        if self._responses:
+            self._record(system, messages, max_tokens)
+            return self._responses.pop(0)
+        if self.auto_respond:
+            self._record(system, messages, max_tokens)
+            text = _stub_auto_text(messages)
+            return ProviderResponse(
+                text=text, usage=_stub_estimate_usage(system, messages, text)
             )
-        self.calls.append(
-            {"system": system, "messages": list(messages), "max_tokens": max_tokens}
+        raise ProviderResponseError(
+            "AsyncStubProvider exhausted: no more scripted responses "
+            f"(served {self.call_count} call(s) so far). One areason()/agenerate() "
+            "runs several provider calls — plan, self-check, draft, etc. — so "
+            "either script one response per phase via AsyncStubProvider(responses="
+            "[...]) / push(...), or pass auto_respond=True for a stub that answers "
+            'every phase automatically (this is what configure(provider="stub") uses).'
         )
-        return self._responses.pop(0)
 
 
 AsyncProviderFactory = Callable[..., AsyncProvider]
@@ -466,7 +491,8 @@ def build_async_provider(*, name: str, api_key: str | None, model: str) -> Async
     if name == "ollama":
         return _AsyncOllamaProvider(api_key=api_key, model=model)
     if name == "stub":
-        return AsyncStubProvider(model=model)
+        # Auto-respond so `configure(provider="stub")` works with no scripting.
+        return AsyncStubProvider(model=model, auto_respond=True)
     raise ProviderNotAvailable(
         f"Async provider {name!r} is not available. "
         "Built-in: openrouter, anthropic, openai, gemini, ollama, stub."

@@ -44,7 +44,7 @@ from essarion_build._runtime import LiteRuntime, _extract_tag, select_runtime
 # -------------------- import / version / defaults --------------------
 
 def test_version() -> None:
-    assert essarion_build.__version__ == "0.3.0"
+    assert essarion_build.__version__ == "0.3.1"
 
 
 def test_imports_clean() -> None:
