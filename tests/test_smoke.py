@@ -44,7 +44,7 @@ from essarion_build._runtime import LiteRuntime, _extract_tag, select_runtime
 # -------------------- import / version / defaults --------------------
 
 def test_version() -> None:
-    assert essarion_build.__version__ == "0.2.0"
+    assert essarion_build.__version__ == "0.3.0"
 
 
 def test_imports_clean() -> None:
@@ -65,6 +65,7 @@ def test_default_config_is_cheap_byok() -> None:
 # -------------------- skills (bundled coding practice) --------------------
 
 EXPECTED_SKILLS = {
+    # v0.2 set
     "secure_coding",
     "error_handling",
     "testing",
@@ -86,6 +87,40 @@ EXPECTED_SKILLS = {
     "auth_security",
     "observability",
     "scope_discipline",
+    # v0.3 additions
+    "rust_idioms",
+    "go_idioms",
+    "sql_idioms",
+    "react_patterns",
+    "accessibility",
+    "internationalization",
+    "caching",
+    "microservices",
+    "feature_flags",
+    "event_driven",
+    "state_management",
+    "llm_integration",
+    "release_engineering",
+    "incident_response",
+    "dx",
+    "migrations",
+    "dependency_injection",
+    "cloud_infra",
+    "kubernetes",
+    "code_style",
+    "code_smells",
+    "code_organization",
+    "networking",
+    "containers",
+    "distributed_systems",
+    "ml_engineering",
+    "web_security",
+    "build_systems",
+    "code_search",
+    "code_with_llms",
+    "observability_practice",
+    "code_review_practice",
+    "agile_practice",
 }
 
 
@@ -413,8 +448,8 @@ def test_cloud_runtime_raises() -> None:
 
 def test_provider_not_available() -> None:
     with pytest.raises(ProviderNotAvailable) as exc:
-        build_provider(name="gemini", api_key="x", model="x")
-    assert "gemini" in str(exc.value)
+        build_provider(name="palmyra-mistral-xyz", api_key="x", model="x")
+    assert "palmyra-mistral-xyz" in str(exc.value)
     assert "openrouter" in str(exc.value)
 
 
