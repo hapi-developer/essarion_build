@@ -285,6 +285,19 @@ reason("anything", context=Context(),
 
 ## Write tests against `generate()`
 
+For a quick no-network smoke test, the `stub` provider auto-answers every
+phase — no scripting needed:
+
+```python
+from essarion_build import generate
+
+g = generate("anything", provider="stub", model="test")
+assert g.code and g.defense
+```
+
+When you need to assert on exact output, script an explicit `StubProvider`
+(strict: one response per phase; running out raises):
+
 ```python
 from essarion_build import Context, StubProvider, LiteRuntime, generate
 

@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-05-29
+
+Usability fixes for the built-in test stub, from a v0.3.0 field report. No
+breaking changes: explicitly constructed stubs keep their strict, scripted
+behavior; only stubs selected *by name* gain auto-respond.
+
+### Fixed
+- **`configure(provider="stub")` / `--provider stub` now work out of the
+  box.** Previously the first call raised
+  `ProviderResponseError: StubProvider exhausted: no more scripted responses`,
+  because the registry-built stub had an empty queue and a reasoning loop
+  makes several provider calls (plan, self-check, draft, …). A stub selected
+  by name is now created with `auto_respond=True` and synthesizes a
+  well-formed response for whichever reasoning phase is asking — across every
+  effort level (`quick`/`standard`/`deep`/`max`/`auto`) and for the sync,
+  async, and CLI surfaces. No scripting, no API key, no network.
+- **`Conversation.reason()` / `.generate()` accept the `_runtime` test seam.**
+  `essarion_build.testing` documents that `run_with_stub(stub, conv.reason,
+  task)` works, but it raised `TypeError: unexpected keyword argument
+  '_runtime'`. The kwarg is now threaded through (mirroring the top-level
+  `reason()` / `generate()`), restoring the documented contract.
+- The `StubProvider` / `AsyncStubProvider` "exhausted" error is now
+  actionable: it explains that a loop makes several calls and points at
+  `responses=[...]` / `push(...)` and `auto_respond=True`.
+
+### Added
+- `StubProvider(auto_respond=True)` / `AsyncStubProvider(auto_respond=True)`:
+  serve scripted responses first, then auto-answer once the queue is empty.
+  Auto replies are phase-aware (read from the prompt's requested tags) and
+  carry a deterministic, non-zero usage estimate.
+
 ## [0.3.0] - 2026-05-29
 
 The big "SDK + CLI coding agent" release. v0.2 was a focused

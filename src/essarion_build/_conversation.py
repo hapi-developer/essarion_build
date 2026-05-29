@@ -19,6 +19,7 @@ from ._context import Context
 from ._generate import Generation, generate as _generate
 from ._providers import Usage
 from ._reasoning import Reasoning, reason as _reason
+from ._runtime import Runtime
 
 
 class ConversationTurn(BaseModel):
@@ -52,8 +53,13 @@ class Conversation(BaseModel):
     history: list[ConversationTurn] = Field(default_factory=list)
     usage: Usage = Field(default_factory=Usage)
 
-    def reason(self, task: str) -> Reasoning:
-        """Run a reason() turn. Appends the resulting plan summary to context."""
+    def reason(self, task: str, *, _runtime: Runtime | None = None) -> Reasoning:
+        """Run a reason() turn. Appends the resulting plan summary to context.
+
+        The `_runtime` kwarg mirrors `reason()` and is for tests — e.g.
+        ``run_with_stub(stub, conv.reason, task)``. User code leaves it unset
+        and configures the conversation via `provider` / `runtime` / `model`.
+        """
         r = _reason(
             task,
             context=self.context,
@@ -62,12 +68,16 @@ class Conversation(BaseModel):
             api_key=self.api_key,
             model=self.model,
             max_tokens=self.max_tokens,
+            _runtime=_runtime,
         )
         self._record_turn(task=task, kind="reason", result=r)
         return r
 
-    def generate(self, task: str) -> Generation:
-        """Run a generate() turn. Appends the resulting plan + code summary to context."""
+    def generate(self, task: str, *, _runtime: Runtime | None = None) -> Generation:
+        """Run a generate() turn. Appends the resulting plan + code summary to context.
+
+        See `reason()` for the `_runtime` test seam.
+        """
         g = _generate(
             task,
             context=self.context,
@@ -76,6 +86,7 @@ class Conversation(BaseModel):
             api_key=self.api_key,
             model=self.model,
             max_tokens=self.max_tokens,
+            _runtime=_runtime,
         )
         self._record_turn(task=task, kind="generate", result=g)
         return g

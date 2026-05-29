@@ -623,12 +623,111 @@ def _parse_ollama_response(data: dict[str, Any], *, model: str) -> ProviderRespo
     )
 
 
+# ---- Auto-responding stub support ----------------------------------------
+#
+# A stub selected by name — build_provider(name="stub") / configure(provider=
+# "stub") — has no scripted responses, yet users reasonably expect it to "just
+# work" for a no-network smoke test. When auto_respond is on, an empty queue
+# synthesizes a well-formed response instead of raising: it reads the XML tags
+# the runtime asked for out of the latest instruction and echoes back canned
+# content for each. That keeps the stub usable across every reasoning phase
+# (plan, triage, critique, revise, alt, synthesize, draft, self-check) with no
+# scripting at all.
+
+# Canned bodies per reasoning tag. `verdict` deliberately ends in "ship" so it
+# never trips output-gated escalation; `complexity` is a parseable digit so the
+# `auto` triage call resolves deterministically.
+_STUB_TAG_BODIES: dict[str, str] = {
+    "complexity": "2",
+    "reason": "stub triage — StubProvider does not assess real complexity.",
+    "plan": "1. (stub) Canned plan from StubProvider; no real reasoning was performed.",
+    "tradeoffs": "- (stub) StubProvider does not weigh real tradeoffs.",
+    "critique": "No material weakness found (stub response).",
+    "code": "# stub: StubProvider does not generate real code.",
+    "defense": "Stub defense — canned StubProvider output, not a real safety argument.",
+    "verdict": "Stub verdict — canned StubProvider output, not real analysis. ship",
+}
+
+# Canonical emission order, so the synthesized text reads naturally regardless
+# of which subset of tags a given phase requested.
+_STUB_TAG_ORDER: tuple[str, ...] = (
+    "complexity",
+    "reason",
+    "plan",
+    "tradeoffs",
+    "critique",
+    "code",
+    "verdict",
+    "defense",
+)
+
+
+def _stub_requested_tags(messages: list[dict[str, Any]]) -> list[str]:
+    """Which known reasoning tags the latest instruction asks the model to emit.
+
+    The runtime's instruction prompts literally contain the XML skeleton they
+    want back (e.g. ``<plan>...</plan>``), so we detect the requested tags by
+    scanning the last user message for opening tags. This stays robust to
+    prompt rewording and to `configure_prompts()` overrides — as long as a
+    prompt still shows the tags it wants, the stub answers with them.
+    """
+    last = ""
+    for m in reversed(messages):
+        if isinstance(m, dict) and m.get("role") == "user":
+            last = m.get("content", "") or ""
+            break
+    else:
+        if messages and isinstance(messages[-1], dict):
+            last = messages[-1].get("content", "") or ""
+    return [t for t in _STUB_TAG_ORDER if f"<{t}>" in last]
+
+
+def _stub_auto_text(messages: list[dict[str, Any]]) -> str:
+    """Synthesize a well-formed response covering whatever the runtime asked for.
+
+    Falls back to emitting every known tag when no tag can be detected (e.g. a
+    fully custom prompt), so the runtime always gets a parseable response.
+    """
+    requested = _stub_requested_tags(messages) or list(_STUB_TAG_ORDER)
+    return "\n".join(f"<{t}>{_STUB_TAG_BODIES[t]}</{t}>" for t in requested)
+
+
+def _stub_estimate_usage(
+    system: str, messages: list[dict[str, Any]], text: str
+) -> Usage:
+    """A deterministic, non-zero usage estimate (~4 chars/token) for auto replies.
+
+    Real providers report usage; an auto-responding stub returning all-zero
+    usage would make cost/usage assertions in users' smoke tests meaningless,
+    so we approximate it from the payload sizes.
+    """
+    prompt_chars = len(system) + sum(
+        len(m.get("content", "")) for m in messages if isinstance(m, dict)
+    )
+    prompt_tokens = max(1, prompt_chars // 4)
+    completion_tokens = max(1, len(text) // 4)
+    return Usage(
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        total_tokens=prompt_tokens + completion_tokens,
+    )
+
+
 class StubProvider:
     """In-memory provider with scripted responses. Public — for tests.
 
-    Users wiring `essarion_build` into their own systems can use this to write
-    deterministic tests against `reason()` / `generate()` without hitting any
-    real provider. Each `complete()` call pops the next scripted response.
+    Two modes:
+
+    - **scripted** (default): each `complete()` pops the next response supplied
+      via ``responses=[...]`` / `push(...)`; running out raises
+      `ProviderResponseError`. Use this for deterministic tests that assert on
+      call counts and exact per-phase output.
+    - **auto-respond** (``auto_respond=True``): once the scripted queue is
+      empty, `complete()` synthesizes a well-formed response for whatever the
+      runtime asked for instead of raising — so the stub works across every
+      reasoning phase with no scripting. ``build_provider(name="stub")`` and
+      ``configure(provider="stub")`` use this mode, which is what makes the
+      "stub" provider a usable zero-setup, no-network smoke test.
 
     >>> stub = StubProvider(responses=[
     ...     "<plan>1</plan><tradeoffs>-</tradeoffs><verdict>ship</verdict>",
@@ -646,8 +745,10 @@ class StubProvider:
         *,
         responses: list[str | ProviderResponse] | None = None,
         model: str = "stub-model",
+        auto_respond: bool = False,
     ) -> None:
         self.model = model
+        self.auto_respond = auto_respond
         self._responses: list[ProviderResponse] = []
         for r in responses or []:
             self._responses.append(self._coerce(r))
@@ -667,6 +768,11 @@ class StubProvider:
         """Append a scripted response to the queue."""
         self._responses.append(self._coerce(response))
 
+    def _record(self, system: str, messages: list[dict[str, Any]], max_tokens: int) -> None:
+        self.calls.append(
+            {"system": system, "messages": list(messages), "max_tokens": max_tokens}
+        )
+
     def complete(
         self,
         *,
@@ -674,15 +780,23 @@ class StubProvider:
         messages: list[dict[str, Any]],
         max_tokens: int,
     ) -> ProviderResponse:
-        if not self._responses:
-            raise ProviderResponseError(
-                "StubProvider exhausted: no more scripted responses. "
-                f"Already served {self.call_count} call(s)."
+        if self._responses:
+            self._record(system, messages, max_tokens)
+            return self._responses.pop(0)
+        if self.auto_respond:
+            self._record(system, messages, max_tokens)
+            text = _stub_auto_text(messages)
+            return ProviderResponse(
+                text=text, usage=_stub_estimate_usage(system, messages, text)
             )
-        self.calls.append(
-            {"system": system, "messages": list(messages), "max_tokens": max_tokens}
+        raise ProviderResponseError(
+            "StubProvider exhausted: no more scripted responses "
+            f"(served {self.call_count} call(s) so far). One reason()/generate() "
+            "runs several provider calls — plan, self-check, draft, etc. — so "
+            "either script one response per phase via StubProvider(responses=[...]) "
+            "/ push(...), or pass auto_respond=True for a stub that answers every "
+            'phase automatically (this is what configure(provider="stub") uses).'
         )
-        return self._responses.pop(0)
 
 
 # Registry of provider constructors. Public-facing names → factory(api_key, model).
@@ -734,7 +848,10 @@ def build_provider(*, name: str, api_key: str | None, model: str) -> Provider:
     if name == "ollama":
         return _OllamaProvider(api_key=api_key, model=model)
     if name == "stub":
-        return StubProvider(model=model)
+        # Selected by name → auto-respond so `configure(provider="stub")` is a
+        # usable, no-network smoke test out of the box. Explicit
+        # `StubProvider(responses=[...])` stays strict for scripted tests.
+        return StubProvider(model=model, auto_respond=True)
     raise ProviderNotAvailable(
         f"Provider {name!r} is not available. "
         f"Built-in: {', '.join(list_providers())}. "
