@@ -26,7 +26,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from .. import tools as sdk_tools
-from . import _background, _changes
+from . import _background, _changes, _hooks
 
 
 # Resolved per-session by the REPL via `bind_tools(cwd, ...)`. Keeping
@@ -47,6 +47,7 @@ def bind_tools(cwd: str | Path, *, auto_approve: bool = False) -> None:
     _AUTO_APPROVE = bool(auto_approve)
     _background.bind_manager(_SANDBOX_ROOT)
     _changes.bind_changelog(_SANDBOX_ROOT)
+    _hooks.bind_hooks(_SANDBOX_ROOT)
 
 
 def _resolve(path: str) -> Path:
@@ -186,6 +187,7 @@ def write_file(path: str, content: str) -> str:
     `/undo` to revert and `/diff` to inspect.
     """
     p = _resolve(path)
+    _hooks.before_tool("write_file", {"path": path})
     p.parent.mkdir(parents=True, exist_ok=True)
     try:
         _changes.current_changelog().record(
@@ -194,7 +196,7 @@ def write_file(path: str, content: str) -> str:
     except Exception:  # noqa: BLE001 - changelog must never block a write
         pass
     p.write_text(content, encoding="utf-8")
-    return f"wrote {len(content):,} bytes to {path}"
+    return _hooks.after_tool("write_file", {"path": path}, f"wrote {len(content):,} bytes to {path}")
 
 
 def apply_diff(path: str, old: str, new: str) -> str:
@@ -207,6 +209,7 @@ def apply_diff(path: str, old: str, new: str) -> str:
     p = _resolve(path)
     if not p.is_file():
         raise FileNotFoundError(f"not a file: {path}")
+    _hooks.before_tool("apply_diff", {"path": path})
     body = p.read_text(encoding="utf-8")
     count = body.count(old)
     if count == 0:
@@ -223,7 +226,7 @@ def apply_diff(path: str, old: str, new: str) -> str:
     except Exception:  # noqa: BLE001
         pass
     p.write_text(new_body, encoding="utf-8")
-    return f"applied 1-occurrence patch to {path}"
+    return _hooks.after_tool("apply_diff", {"path": path}, f"applied 1-occurrence patch to {path}")
 
 
 def delete_file(path: str) -> str:
@@ -236,12 +239,13 @@ def delete_file(path: str) -> str:
     p = _resolve(path)
     if not p.is_file():
         raise FileNotFoundError(f"not a file: {path}")
+    _hooks.before_tool("delete_file", {"path": path})
     try:
         _changes.current_changelog().record_delete(path, sandbox_root=_SANDBOX_ROOT)
     except Exception:  # noqa: BLE001 - changelog must never block the delete
         pass
     p.unlink()
-    return f"deleted {path}"
+    return _hooks.after_tool("delete_file", {"path": path}, f"deleted {path}")
 
 
 def run_shell(cmd: str, timeout: int = 30) -> str:
@@ -251,6 +255,7 @@ def run_shell(cmd: str, timeout: int = 30) -> str:
     `start_background` instead — it returns immediately with a task id.
     """
     parts = shlex.split(cmd)
+    _hooks.before_tool("run_shell", {"command": cmd})
     try:
         result = subprocess.run(
             parts,
@@ -270,7 +275,7 @@ def run_shell(cmd: str, timeout: int = 30) -> str:
     out += f"\n[exit {result.returncode}]"
     if len(out) > 8000:
         out = out[:8000] + "\n... (truncated)"
-    return out
+    return _hooks.after_tool("run_shell", {"command": cmd}, out)
 
 
 # ---------- background tools ----------

@@ -35,7 +35,7 @@ _HELP_GROUPS: list[tuple[str, list[str]]] = [
     ("project & files", ["/cd", "/pwd"]),
     ("changes & verify", ["/diff", "/undo", "/commit", "/verify", "/lint"]),
     ("background", ["/bg"]),
-    ("safety", ["/auto", "/yolo"]),
+    ("safety", ["/auto", "/yolo", "/hooks"]),
     ("help", ["/help"]),
 ]
 
@@ -750,6 +750,34 @@ def _cmd_workflows_list(console: Console, session: Session, args: str) -> Comman
     return "continue"
 
 
+def _cmd_hooks(console: Console, session: Session, args: str) -> CommandResult:
+    """List the lifecycle hooks configured in `.essarion/config.toml`."""
+    from rich.table import Table
+
+    from . import _hooks
+
+    hooks = _hooks.list_hooks()
+    if not hooks:
+        console.print("[meta]no hooks configured.[/meta]")
+        console.print(
+            "[hint]add `[[hooks]]` blocks to .essarion/config.toml — events: "
+            + ", ".join(sorted(_hooks.EVENTS))
+            + ". e.g. format on write:\n"
+            '  [[hooks]]\n  event = "post_tool"\n  matcher = "write_file"\n'
+            '  command = "ruff format ."[/hint]'
+        )
+        return "continue"
+    table = Table(title="hooks", title_style="brand")
+    table.add_column("event", style="key")
+    table.add_column("matcher", style="meta")
+    table.add_column("name", style="meta")
+    table.add_column("command", style="meta")
+    for h in hooks:
+        table.add_row(h.event, h.matcher, h.name or "—", h.command[:60])
+    console.print(table)
+    return "continue"
+
+
 def _cmd_summary(console: Console, session: Session, args: str) -> CommandResult:
     """One-paragraph summary of what the agent did this session.
 
@@ -1078,6 +1106,7 @@ COMMANDS: dict[str, tuple[Callable, str]] = {
     "/whoami": (_cmd_whoami, "one-screen status: project + model + memory + budget"),
     "/summary": (_cmd_summary, "one-paragraph summary of this session — useful for commits/PRs"),
     "/workflows": (_cmd_workflows_list, "list bundled workflows + their slash shortcuts"),
+    "/hooks": (_cmd_hooks, "list lifecycle hooks from .essarion/config.toml"),
     "/keys": (_cmd_keys, "show which provider API keys are set in the env"),
     "/review": (_workflow_command("review"), "shortcut: workflows.review(<target>)"),
     "/fix": (_workflow_command("fix"), "shortcut: workflows.fix_bug(<target>)"),

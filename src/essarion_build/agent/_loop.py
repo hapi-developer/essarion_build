@@ -39,7 +39,7 @@ from ._session import (
     estimate_cost_usd,
 )
 from ._skill_picker import explain_pick, pick_skills
-from . import _tools, _ui
+from . import _tools, _ui, _hooks
 from ._commands import dispatch as dispatch_command
 
 
@@ -700,6 +700,9 @@ def run_turn(console, session: Session, task: str) -> None:
     from .. import approx_generate_calls
     from ._pricing import estimate_turn_cost_usd, format_cost
 
+    if _hooks.fire("user_prompt", {"prompt": task}, console).blocked:
+        console.print("[warn]task blocked by a user_prompt hook.[/warn]")
+        return
     cwd = Path(session.cwd)
     ctx, picks, why = _build_context(task, session=session, cwd=cwd, console=console)
     if picks:
@@ -845,6 +848,7 @@ def run_turn(console, session: Session, task: str) -> None:
             f"[cost.over]budget exceeded by ${session.total_cost_usd - session.budget_usd:.4f}[/cost.over]"
         )
     _ui.render_footer(console, session)
+    _hooks.fire("stop", {"task": task, "files_touched": turn.files_touched}, console)
 
 
 def run_turn_autonomous(console, session: Session, task: str) -> None:
@@ -859,6 +863,9 @@ def run_turn_autonomous(console, session: Session, task: str) -> None:
     from . import _agent_exec
     from ._changes import ChangeLog, current_changelog
 
+    if _hooks.fire("user_prompt", {"prompt": task}, console).blocked:
+        console.print("[warn]task blocked by a user_prompt hook.[/warn]")
+        return
     cwd = Path(session.cwd)
     ctx, picks, why = _build_context(task, session=session, cwd=cwd, console=console)
     if picks:
@@ -948,11 +955,13 @@ def run_turn_autonomous(console, session: Session, task: str) -> None:
             f"[cost.over]budget exceeded by ${session.total_cost_usd - session.budget_usd:.4f}[/cost.over]"
         )
     _ui.render_footer(console, session)
+    _hooks.fire("stop", {"task": task, "files_touched": turn.files_touched}, console)
 
 
 def repl(console, session: Session) -> None:
     """The main interactive loop."""
     _tools.bind_tools(session.cwd)
+    _hooks.fire("session_start", {"session_id": session.id, "cwd": session.cwd}, console)
     while True:
         # Show any background-task completion notices first so the user
         # sees long-running commands finish between turns.

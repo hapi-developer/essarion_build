@@ -106,6 +106,23 @@ _STARTER_CONFIG = """# Per-project Essarion config. Loaded by `essarion` at REPL
 # budget = 1.00          # USD budget per session
 # skills_mode = "auto"   # auto | all | none
 # escalate_model = ""    # e.g. "anthropic/claude-sonnet-4-6"
+
+# Lifecycle hooks — shell commands that run automatically on agent events.
+# Events: pre_tool, post_tool, user_prompt, session_start, stop.
+# A pre_tool hook that exits 2 BLOCKS the tool (stderr = the reason).
+# {path}/{tool}/{command} are substituted (shell-quoted); the event payload
+# is also on stdin and in ESSARION_HOOK_* env vars.
+#
+# [[hooks]]                       # auto-format Python after every write
+# event = "post_tool"
+# matcher = "write_file"
+# command = "ruff format ."
+# name = "format"
+#
+# [[hooks]]                       # refuse destructive shell commands
+# event = "pre_tool"
+# matcher = "run_shell"
+# command = "case \"$ESSARION_HOOK_COMMAND\" in *'rm -rf'*) echo 'blocked: rm -rf' >&2; exit 2;; esac"
 """
 
 _STARTER_GITIGNORE = """# sessions can contain prompts + generated code — usually don't check them in

@@ -35,9 +35,14 @@ Legend: ✅ shipped · 🟡 partial · ⭕ open goal (not built yet)
 
 ## Extensibility
 - ✅ **Skills** — bundled, with an auto/all/none picker.
+- ✅ **Hooks** — shell commands that fire on lifecycle events (`pre_tool`,
+  `post_tool`, `user_prompt`, `session_start`, `stop`), configured as
+  `[[hooks]]` in `.essarion/config.toml`. `pre_tool` exit-2 blocks a tool
+  (Claude-Code parity); `post_tool` output folds into the tool result. Format
+  on write, enforce command policy, notify on completion. `_hooks.py`, `/hooks`.
 - 🟡 **Memory** — project memory via `/remember` + `.essarion/`. A `CLAUDE.md`
   auto-read and self-accumulating memory are open.
-- ⭕ **Subagents** · ⭕ **Hooks** · ⭕ **MCP** · ⭕ **Plugins / marketplaces**
+- ⭕ **Subagents** · ⭕ **MCP** · ⭕ **Plugins / marketplaces**
 
 ## Automation & orchestration
 - 🟡 **Headless / SDK** — `--task` one-shot + the Python SDK (`reason`/`generate`).
@@ -51,12 +56,14 @@ Legend: ✅ shipped · 🟡 partial · ⭕ open goal (not built yet)
 
 ---
 
-### Closed in this pass
-The agentic core: an autonomous execution loop (`_agent_exec.execute` +
-`run_turn_autonomous`), the `delete_file` tool, the `/auto` mode + `--autonomous`
-flag, and cloud auto-mode-by-default. The plan→approve gate is kept as the single
-human checkpoint; everything after it runs on disk and is fully undoable.
+### Closed so far
+- The agentic core: an autonomous execution loop (`_agent_exec.execute` +
+  `run_turn_autonomous`), the `delete_file` tool, the `/auto` mode +
+  `--autonomous` flag, and cloud auto-mode-by-default. The plan→approve gate is
+  the single human checkpoint; everything after runs on disk and is undoable.
+- Hooks: `pre_tool`/`post_tool`/`user_prompt`/`session_start`/`stop`, wired
+  through the sandboxed tools and both turn paths, surfaced in the cloud worker.
 
 ### Suggested next open goal
-**Hooks** or **MCP** give the most leverage next (they unlock CI events, custom
-commands, and external tools). Say which and it's the next pass.
+**MCP** — connect external tools/services and let servers push events (CI,
+alerts) into a session. After that, subagents or scheduled tasks. Say the word.
