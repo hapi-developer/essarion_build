@@ -29,7 +29,10 @@ from ._ui import make_console, show_banner
 def _add_agent_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--task",
-        help="run this task non-interactively and exit",
+        nargs="+",
+        metavar="WORD",
+        help="run this task non-interactively and exit. Quotes are optional: "
+        '`--task please code a website` works the same as `--task "please code a website"`',
     )
     parser.add_argument(
         "--cwd",
@@ -82,6 +85,25 @@ def _add_agent_args(parser: argparse.ArgumentParser) -> None:
         type=int,
         help="per-call token cap (default: from configure())",
     )
+    # Free-text task as bare positional words, so `essarion fix the failing test`
+    # runs one-shot without --task or quotes. No words → launch the REPL.
+    parser.add_argument(
+        "task_words",
+        nargs="*",
+        metavar="TASK",
+        help="optional task to run once (quotes optional); omit to open the chat REPL",
+    )
+
+
+def _task_text(args: argparse.Namespace) -> str:
+    """The one-shot task string from either `--task` or bare positional words,
+    joined so multi-word input is never truncated to the first word. Empty
+    string means 'no task → open the REPL'."""
+    if getattr(args, "task", None):
+        return " ".join(args.task).strip()
+    if getattr(args, "task_words", None):
+        return " ".join(args.task_words).strip()
+    return ""
 
 
 def build_agent_parser() -> argparse.ArgumentParser:
@@ -241,16 +263,17 @@ def run_agent(argv: list[str] | None = None) -> int:
 
     from .. import list_skills
 
-    if args.task:
+    task = _task_text(args)
+    if task:
         # Non-interactive single-task mode — pipes-friendly.
         from ._background import shutdown_manager
         from ._loop import run_turn, run_turn_autonomous
 
         try:
             if session.autonomous:
-                run_turn_autonomous(console, session, args.task)
+                run_turn_autonomous(console, session, task)
             else:
-                run_turn(console, session, args.task)
+                run_turn(console, session, task)
         finally:
             shutdown_manager()
         return 0

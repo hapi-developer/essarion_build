@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-05-31
+
+A coding-agent UX pass: a persistent Claude-Code-style chat input, a friendlier
+launch story, and verified end-to-end autonomous execution.
+
+### Added
+- **Persistent chat REPL input (`prompt_toolkit`).** A fresh input line returns
+  after every turn — no need to re-invoke `essarion` or pass `--task`. Includes
+  command history that survives across turns and sessions (↑/↓), history-based
+  autosuggestions, slash-command completion, a placeholder, and a hint toolbar.
+  Falls back to a plain Rich prompt for pipes/CI or if prompt_toolkit is absent.
+- **Lifecycle hooks** (`pre_tool`/`post_tool`/`user_prompt`/`session_start`/
+  `stop`) configured in `.essarion/config.toml`; `/hooks` lists them.
+- **Redesigned welcome screen**: block wordmark with a `>` prompt and a
+  "Tips for getting started" box.
+
+### Changed
+- **Bare `essarion` *and* `essarion-build` now launch the REPL.** Both console
+  scripts share one dispatcher; subcommands still work, free text / `--task`
+  runs one-shot.
+
+### Fixed
+- **Multi-word tasks no longer truncate to the first word.** `--task please
+  code a website` (unquoted) and bare `essarion fix the failing test` are
+  joined into the full task instead of erroring on "unrecognized arguments".
+
+### Verified
+- The autonomous loop genuinely **writes code, runs the tests, observes the real
+  failure, fixes it, re-runs, and finishes** — proven by a reactive test that
+  branches on live subprocess output (`tests/test_agent_exec_verify.py`).
+
 ## [0.3.1] - 2026-05-29
 
 Usability fixes for the built-in test stub, from a v0.3.0 field report. No

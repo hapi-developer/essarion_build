@@ -967,7 +967,7 @@ def repl(console, session: Session) -> None:
         # sees long-running commands finish between turns.
         _ui.drain_background_notices(console)
         try:
-            line = _ui.prompt_input(console)
+            line = _ui.prompt_input(console, session)
         except KeyboardInterrupt:
             line = "/quit"
         if not line:

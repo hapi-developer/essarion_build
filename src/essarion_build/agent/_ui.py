@@ -267,12 +267,17 @@ def drain_background_notices(console: Console) -> None:
 
 # ---------- prompts ----------
 
-def prompt_input(console: Console) -> str:
-    """The user-input prompt at the top of each turn."""
-    try:
-        return Prompt.ask("[you]you[/you]", console=console).strip()
-    except (EOFError, KeyboardInterrupt):
-        return "/quit"
+def prompt_input(console: Console, session: Session | None = None) -> str:
+    """The user-input prompt at the top of each turn.
+
+    Delegates to the Claude-Code-style input (prompt_toolkit when available,
+    Rich prompt otherwise). A fresh line is read every turn, so multi-word
+    tasks like "please code a website" are captured whole — no `--task`,
+    no shell quoting, no "only the first word" parsing.
+    """
+    from ._input import read_prompt
+
+    return read_prompt(console, session)
 
 
 def prompt_approve_plan(console: Console) -> str:
