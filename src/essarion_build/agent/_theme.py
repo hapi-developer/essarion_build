@@ -46,17 +46,36 @@ ESSARION_THEME = Theme(
 )
 
 
-# ASCII banner used by the welcome screen. Picked so it fits in 80 columns
-# even on narrow terminals.
-BANNER = r"""[brand]
-                                _                 _           _ _     _
-   ___  ___ ___  __ _ _ __ (_) ___  _ __   | |__  _   _(_) | __| |
-  / _ \/ __/ __|/ _` | '__| |/ _ \| '_ \  | '_ \| | | | | |/ _` |
- |  __/\__ \__ \ (_| | |  | | (_) | | | | | |_) | |_| | | | (_| |
-  \___||___/___/\__,_|_|  |_|\___/|_| |_| |_.__/ \__,_|_|_|\__,_|[/brand]
-"""
+# ASCII wordmark for the welcome screen. Built programmatically so a leading
+# ">" chevron prompt (terminal-prompt motif, like the reference UI) sits to the
+# left of the block letters without disturbing their internal alignment: every
+# line gets a uniform 2-char prefix, and the vertical-middle line uses "> ".
+_WORDMARK = r"""   ___  ___ ___  __ _ _ __(_) ___  _ __
+  / _ \/ __/ __|/ _` | '__| |/ _ \| '_ \
+ |  __/\__ \__ \ (_| | |  | | (_) | | | |
+  \___||___/___/\__,_|_|  |_|\___/|_| |_|"""
+
+
+def _with_chevron(art: str) -> str:
+    lines = art.split("\n")
+    mid = len(lines) // 2  # the upper-middle line carries the ">" prompt
+    return "\n".join(("> " if i == mid - 1 else "  ") + ln for i, ln in enumerate(lines))
+
+
+BANNER = "[brand]" + _with_chevron(_WORDMARK) + "[/brand]"
+
+# Compact single-line wordmark for narrow terminals.
+BANNER_COMPACT = "[brand]> ESSARION[/brand]"
 
 TAGLINE = (
     "[brand.dim]CLI coding agent · plan-first · token-efficient · BYOK[/brand.dim]\n"
     "[meta]by Essarion · amplifies any LLM with senior-engineer reasoning[/meta]"
 )
+
+# "Getting started" tips shown under the wordmark (Gemini-style welcome box).
+TIPS = [
+    "Describe a task in plain language — the agent plans first, then acts.",
+    "Turn on autonomous mode with [key]/auto[/key] to build end-to-end on disk.",
+    "Run [key]/help[/key] for commands, or [key]/hooks[/key] to see lifecycle hooks.",
+    "Create an [key].essarion/config.toml[/key] to set defaults, hooks, and verify checks.",
+]

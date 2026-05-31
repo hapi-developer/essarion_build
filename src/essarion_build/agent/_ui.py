@@ -19,7 +19,7 @@ from rich.table import Table
 from rich.text import Text
 
 from ._session import Session
-from ._theme import BANNER, ESSARION_THEME, TAGLINE
+from ._theme import BANNER, BANNER_COMPACT, ESSARION_THEME, TAGLINE, TIPS
 
 
 def make_console() -> Console:
@@ -39,8 +39,24 @@ def show_banner(
     `project` (optional) is an `agent._project.Project`; when present we
     label the cwd row with the marker that identified the project root.
     """
-    console.print(BANNER)
+    # Big block wordmark, or a compact one on very narrow terminals.
+    console.print(BANNER if console.width >= 46 else BANNER_COMPACT)
     console.print(TAGLINE)
+    console.print()
+    # "Tips for getting started" box (Gemini-style welcome).
+    tips_body = Group(*[
+        Text.from_markup(f"[brand.dim]{i}.[/brand.dim] {tip}")
+        for i, tip in enumerate(TIPS, start=1)
+    ])
+    console.print(
+        Panel(
+            tips_body,
+            title="[brand]Tips for getting started[/brand]",
+            title_align="left",
+            border_style="brand.dim",
+            padding=(1, 2),
+        )
+    )
     console.print()
     table = Table.grid(padding=(0, 2))
     table.add_column(style="meta", justify="right")
