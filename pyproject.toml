@@ -43,6 +43,12 @@ test = [
     "pytest>=8",
     "pytest-asyncio>=0.24",
 ]
+# Computer use — browser tier. The reducer/observer/expectations are pure-Python
+# and dependency-free; only the live PlaywrightBackend needs this extra (plus a
+# one-time `playwright install chromium`).
+computer = [
+    "playwright>=1.40",
+]
 
 [project.scripts]
 # Both entry points share one dispatcher: bare `essarion` / `essarion-build`

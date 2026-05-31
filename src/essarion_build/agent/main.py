@@ -77,6 +77,14 @@ def _add_agent_args(parser: argparse.ArgumentParser) -> None:
         "(write/edit/delete/shell) instead of emitting one code blob to apply",
     )
     parser.add_argument(
+        "--computer-use",
+        "--computer",
+        dest="computer_use",
+        action="store_true",
+        help="enable computer use: let the agent drive a real browser (reactive, "
+        "opt-in). Implies --autonomous. Off by default.",
+    )
+    parser.add_argument(
         "--resume",
         help="resume a prior session by id (see /load inside the REPL)",
     )
@@ -178,6 +186,9 @@ def _initial_session(args: argparse.Namespace, project: Project) -> Session:
             s.budget_usd = args.budget
         if getattr(args, "autonomous", False):
             s.autonomous = True
+        if getattr(args, "computer_use", False):
+            s.computer_use = True
+            s.autonomous = True  # computer use needs the act→observe→act loop
         return s
 
     # New session, anchored to the project root.
@@ -192,7 +203,8 @@ def _initial_session(args: argparse.Namespace, project: Project) -> Session:
         budget_usd=args.budget,
         skills_mode=args.skills,
         effort=args.effort,
-        autonomous=getattr(args, "autonomous", False),
+        autonomous=getattr(args, "autonomous", False) or getattr(args, "computer_use", False),
+        computer_use=getattr(args, "computer_use", False),
     )
 
 

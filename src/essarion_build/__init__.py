@@ -66,6 +66,7 @@ from .tools import (
     tool_manifest,
     unregister_tool,
 )
+from . import computer  # reactive computer-use toolkit (browser tier; opt-in)
 from ._streaming import ReasoningEvent, stream_generate, stream_reason
 from ._telemetry import TelemetryCallback, configure_telemetry
 from .exceptions import (
@@ -81,9 +82,11 @@ from .exceptions import (
     ReasoningFormatError,
 )
 
-__version__ = "0.3.2"
+__version__ = "0.4.0"
 
 __all__ = [
+    # Subpackages
+    "computer",
     # Core types
     "Context",
     "Diff",

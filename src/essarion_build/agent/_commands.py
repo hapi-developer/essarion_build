@@ -35,7 +35,7 @@ _HELP_GROUPS: list[tuple[str, list[str]]] = [
     ("project & files", ["/cd", "/pwd"]),
     ("changes & verify", ["/diff", "/undo", "/commit", "/verify", "/lint"]),
     ("background", ["/bg"]),
-    ("safety", ["/auto", "/yolo", "/hooks"]),
+    ("safety", ["/auto", "/computer", "/yolo", "/hooks"]),
     ("help", ["/help"]),
 ]
 
@@ -542,6 +542,41 @@ def _cmd_auto(console: Console, session: Session, args: str) -> CommandResult:
             "[hint]approved plans now run end-to-end on disk "
             "(write/edit/delete/shell). /undo and /diff still work.[/hint]"
         )
+    return "continue"
+
+
+def _cmd_computer(console: Console, session: Session, args: str) -> CommandResult:
+    """Toggle computer use — let the agent drive a real browser (reactive, opt-in).
+
+    When ON, the agent gains the browser_* tools and acts→observes→acts on a live
+    page. Implies autonomous mode. Off by default. Needs the [computer] extra
+    (`pip install 'essarion-build[computer]'` + `playwright install chromium`)
+    for the real browser; a vision model is only needed for screenshots.
+    """
+    arg = args.strip().lower()
+    if arg == "on":
+        session.computer_use = True
+    elif arg == "off":
+        session.computer_use = False
+    elif arg == "":
+        session.computer_use = not session.computer_use
+    else:
+        console.print("[err]usage: /computer [on|off][/err]")
+        return "continue"
+    if session.computer_use:
+        session.autonomous = True  # act→observe→act needs the autonomous loop
+        console.print("[ok]computer use: ON[/ok]")
+        from ..computer import check_vision
+
+        ok, msg = check_vision(session.provider, session.model)
+        if not ok:
+            console.print(f"[warn]note:[/warn] {msg}")
+        console.print(
+            "[hint]the agent can now open a browser, click/type, and read a digest "
+            "of what changed. say what you want tested.[/hint]"
+        )
+    else:
+        console.print("[meta]computer use: OFF[/meta]")
     return "continue"
 
 
@@ -1102,6 +1137,7 @@ COMMANDS: dict[str, tuple[Callable, str]] = {
     "/cost": (_cmd_cost, "show session cost ledger or estimate against a path"),
     "/stream": (_cmd_stream, "toggle streamed draft output (token-by-token)"),
     "/auto": (_cmd_auto, "toggle autonomous mode (run approved plans on disk)"),
+    "/computer": (_cmd_computer, "toggle computer use (drive a real browser; opt-in)"),
     "/effort": (_cmd_effort, "show or set reasoning depth (quick/standard/deep/max/auto)"),
     "/whoami": (_cmd_whoami, "one-screen status: project + model + memory + budget"),
     "/summary": (_cmd_summary, "one-paragraph summary of this session — useful for commits/PRs"),

@@ -115,10 +115,10 @@ def _parse_args(raw: str) -> dict[str, Any]:
         return {}
 
 
-def _run_one(name: str, raw_args: str) -> tuple[bool, str]:
+def _run_one(name: str, raw_args: str, allow: set[str]) -> tuple[bool, str]:
     """Execute a single tool call via the SDK registry. Returns (ok, body)."""
     call = f'<tool_call name="{name}">{raw_args}</tool_call>'
-    out = sdk_tools.run_tools_in_plan(call, allow=AUTONOMOUS_ALLOW)
+    out = sdk_tools.run_tools_in_plan(call, allow=allow)
     m = _RESULT_RE.search(out)
     if not m:
         return False, out.strip()
@@ -146,6 +146,8 @@ def execute(
     turn: TaskTurn | None = None,
     plan: str = "",
     max_steps: int = _DEFAULT_MAX_STEPS,
+    allow: set[str] | None = None,
+    extra_system: str = "",
 ) -> ExecResult:
     """Drive tools autonomously to accomplish `goal`. Writes directly to disk.
 
@@ -157,7 +159,10 @@ def execute(
     runtime = make_runtime(session.provider, session.model)
     provider = runtime._provider  # raw text-in/text-out completion seam
 
+    allow = allow or AUTONOMOUS_ALLOW
     system = _system_prompt(ctx)
+    if extra_system.strip():
+        system += "\n\n" + extra_system.strip()
     user = f"GOAL:\n{goal.strip()}\n"
     if plan.strip():
         user += f"\nAPPROVED PLAN:\n{plan.strip()}\n"
@@ -208,7 +213,7 @@ def execute(
         # Run each requested tool, render it, and collect results to feed back.
         result_blocks: list[str] = []
         for name, raw_args in calls:
-            ok, body = _run_one(name, raw_args)
+            ok, body = _run_one(name, raw_args, allow)
             args = _parse_args(raw_args)
             _ui.render_tool_run(console, name, args, body, ok)
             if ok and name in _MUTATING:

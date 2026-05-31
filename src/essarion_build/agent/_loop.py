@@ -924,10 +924,37 @@ def run_turn_autonomous(console, session: Session, task: str) -> None:
     _ui.render_phase_header(console, "build")
     log = current_changelog()
     start = len(log.entries)
-    result = _agent_exec.execute(
-        console, session, task, ctx,
-        make_runtime=_make_runtime, turn=turn, plan=turn.plan,
-    )
+
+    # Computer use (opt-in): extend the toolset with the browser_* tools and
+    # launch a backend for this turn. Never on by default.
+    from . import _computer
+
+    allow = _agent_exec.AUTONOMOUS_ALLOW
+    extra_system = ""
+    backend = None
+    if _computer.computer_use_active(session, task):
+        from ..computer import COMPUTER_TOOL_NAMES
+
+        try:
+            backend = _computer.start_computer_session(session)
+            allow = set(_agent_exec.AUTONOMOUS_ALLOW) | COMPUTER_TOOL_NAMES
+            extra_system = _computer.COMPUTER_PROTOCOL
+            console.print("[brand]🖥  computer use enabled[/brand] [meta](browser tools active)[/meta]")
+        except Exception as e:  # noqa: BLE001 - surface, don't crash the turn
+            console.print(
+                f"[warn]computer use requested but the browser backend could not "
+                f"start:[/warn] {e}"
+            )
+
+    try:
+        result = _agent_exec.execute(
+            console, session, task, ctx,
+            make_runtime=_make_runtime, turn=turn, plan=turn.plan,
+            allow=allow, extra_system=extra_system,
+        )
+    finally:
+        if backend is not None:
+            _computer.stop_computer_session(backend)
     for p in result.files_touched:
         if p not in turn.files_touched:
             turn.files_touched.append(p)

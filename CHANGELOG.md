@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-05-31
+
+**Computer use** — reactive, text-first, opt-in. The agent can drive a real
+browser to test apps, pages, and flows (start a dev server in the background,
+then navigate and interact). Built on one principle: the environment observes
+and emits structured events; the model acts on a compact *digest* only when
+something meaningful changes — it is never a continuous watcher.
+
+### Added
+- **`essarion_build.computer`** — an importable toolkit (like the reasoning
+  loop): `reduce_events`/`Digest` (the reducer — the heart), `BufferedObserver`,
+  `Backend`/`FakeBackend`/`PlaywrightBackend`, the `browser_*` action tools,
+  and `parse_expectation`/`check_expectation`. Build your own reactive browser
+  tools on top of it.
+- **Reactive browser tier** — a CDP/Playwright tap (console, network failures,
+  navigation, dialogs, DOM mutations via a page-side queue) normalized and
+  reduced into a budget-sized digest returned by every action. Catches the
+  transient changes a screenshot-only agent misses.
+- **Expectation-checked acting** ("reason deep, act fast") — every action takes
+  an optional `expect=` one-line prediction; the environment verifies it against
+  the digest + page text deterministically (no extra model call) and prepends
+  ✓/✗. Forces the model to reason about consequences in the same tokens it acts
+  with, and only re-engages it when reality diverges.
+- **Opt-in gating** — off by default. Enable via `--computer-use`, `/computer`,
+  or an unambiguous request ("use the computer", "open a browser and …"). The
+  `[computer]` extra installs Playwright; the reducer/observer/expectations are
+  pure-Python and dependency-free.
+- **Vision check** — `browser_screenshot` (and `/computer`) detect when the
+  model can't see images and prompt you to switch instead of sending blind.
+
+### Changed
+- `tool_manifest()` already exposes exact signatures (0.3.2) — the computer
+  tools rely on it so the model uses `selector=`/`url=` correctly.
+
 ## [0.3.2] - 2026-05-31
 
 A coding-agent UX pass: a persistent Claude-Code-style chat input, a friendlier
