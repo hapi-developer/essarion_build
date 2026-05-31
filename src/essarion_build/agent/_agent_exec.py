@@ -107,12 +107,11 @@ def _parse_calls(text: str) -> list[tuple[str, str]]:
 
 
 def _parse_args(raw: str) -> dict[str, Any]:
-    if not raw:
-        return {}
+    """Args for display/bookkeeping — tolerant of fences and multi-line content,
+    matching the executor's parser so the rendered tool call shows real args."""
     try:
-        parsed = json.loads(raw)
-        return parsed if isinstance(parsed, dict) else {"_": parsed}
-    except json.JSONDecodeError:
+        return sdk_tools.coerce_tool_args(raw)
+    except Exception:  # noqa: BLE001 - display only; never fail a turn
         return {}
 
 

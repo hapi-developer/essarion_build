@@ -36,6 +36,7 @@ Usage:
 
 from __future__ import annotations
 
+import inspect
 import json
 import re
 from typing import Any, Callable
@@ -95,6 +96,93 @@ _TOOL_CALL_RE = re.compile(
     re.DOTALL,
 )
 
+# Common arg-name guesses → the tool's real parameter. Real models reach for
+# natural names (run_shell "command" instead of "cmd"); we accept both so a
+# good action isn't dropped over a synonym.
+_ARG_ALIASES: dict[str, dict[str, str]] = {
+    "run_shell": {"command": "cmd", "shell": "cmd", "script": "cmd", "cmd_line": "cmd"},
+    "start_background": {"command": "cmd", "shell": "cmd"},
+}
+
+
+# Sibling `<key>value</key>` tags inside a tool-call body. Non-greedy + a
+# backreference, so any nested tags inside a value (e.g. HTML in "content")
+# are absorbed into that value rather than parsed as extra args.
+_KV_TAG_RE = re.compile(r"<([A-Za-z_][A-Za-z0-9_]*)\s*>(.*?)</\1\s*>", re.DOTALL)
+
+
+def _clean_tag_value(v: str) -> str:
+    # Multi-line block (a file body): drop a single leading newline from
+    # `<content>\n…`, keep the rest verbatim. Scalars: strip surrounding space.
+    return v[1:] if v.startswith("\n") else (v if "\n" in v else v.strip())
+
+
+def coerce_tool_args(raw: str) -> dict[str, Any]:
+    """Parse the args from a `<tool_call>` body, tolerating what real models
+    actually emit:
+
+    * **JSON** — ``{"path": "...", "content": "..."}``; with ``strict=False`` so
+      literal newlines/tabs inside a string value (a code file) are allowed.
+    * **XML-style child tags** — ``<path>…</path><content>…</content>`` — which
+      Claude-family models prefer for multi-line file bodies (no JSON escaping).
+    * a surrounding markdown code fence (```json … ```).
+
+    Returns a kwargs dict; raises ValueError/JSONDecodeError if it's neither.
+    """
+    raw = (raw or "").strip()
+    if not raw:
+        return {}
+    if raw.startswith("```"):
+        raw = re.sub(r"^```[A-Za-z0-9_-]*[ \t]*\n?", "", raw)
+        raw = re.sub(r"\n?```$", "", raw).strip()
+
+    # JSON form first.
+    if raw[:1] in "{[":
+        try:
+            parsed = json.loads(raw, strict=False)
+        except json.JSONDecodeError:
+            parsed = None
+        if isinstance(parsed, dict):
+            return parsed
+        if parsed is not None:
+            raise ValueError(f"args must be a JSON object, got {type(parsed).__name__}")
+
+    # XML-child form (the common shape for multi-line content).
+    kv = {m.group(1): _clean_tag_value(m.group(2)) for m in _KV_TAG_RE.finditer(raw)}
+    if kv:
+        return kv
+
+    # Neither matched — re-raise a clear JSON error.
+    parsed = json.loads(raw, strict=False)
+    if not isinstance(parsed, dict):
+        raise ValueError(f"args must be a JSON object, got {type(parsed).__name__}")
+    return parsed
+
+
+def _normalize_kwargs(name: str, kwargs: dict[str, Any]) -> dict[str, Any]:
+    aliases = _ARG_ALIASES.get(name)
+    if not aliases:
+        return kwargs
+    return {aliases.get(k, k): v for k, v in kwargs.items()}
+
+
+def _signature_str(fn: ToolFn) -> str:
+    """A compact `arg, optional=default` signature for the tool manifest, so the
+    model uses the EXACT parameter names instead of guessing."""
+    try:
+        sig = inspect.signature(fn)
+    except (TypeError, ValueError):
+        return ""
+    parts: list[str] = []
+    for p in sig.parameters.values():
+        if p.kind in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD):
+            continue
+        if p.default is inspect.Parameter.empty:
+            parts.append(p.name)
+        else:
+            parts.append(f"{p.name}={p.default!r}")
+    return ", ".join(parts)
+
 
 def _format_result(name: str, body: Any) -> str:
     return f"<tool_result name=\"{name}\">{body}</tool_result>"
@@ -125,18 +213,11 @@ def run_tools_in_plan(text: str, *, allow: set[str] | None = None) -> str:
         if fn is None:
             return _format_error(name, f"tool {name!r} not registered")
         kwargs: dict[str, Any]
-        if not raw_args:
-            kwargs = {}
-        else:
-            try:
-                parsed = json.loads(raw_args)
-            except json.JSONDecodeError as e:
-                return _format_error(name, f"args JSON invalid: {e}")
-            if not isinstance(parsed, dict):
-                return _format_error(
-                    name, f"args must be a JSON object, got {type(parsed).__name__}"
-                )
-            kwargs = parsed
+        try:
+            kwargs = coerce_tool_args(raw_args)
+        except (json.JSONDecodeError, ValueError) as e:
+            return _format_error(name, f"args JSON invalid: {e}")
+        kwargs = _normalize_kwargs(name, kwargs)
         try:
             result = fn(**kwargs)
         except Exception as e:  # noqa: BLE001 - surface to model, don't crash
@@ -156,10 +237,17 @@ def tool_manifest() -> str:
     """
     if not _TOOLS:
         return "No tools are registered."
-    lines = ["Tools available (call with <tool_call name='NAME'>{json args}</tool_call>):"]
+    lines = [
+        "Tools available. Call one with a JSON object of arguments using EXACTLY "
+        "these parameter names:",
+        '  <tool_call name="TOOL">{"arg": "value"}</tool_call>',
+        "",
+    ]
     for name in sorted(_TOOLS):
-        desc = _TOOL_DESCRIPTIONS.get(name, "")
-        lines.append(f"- {name}: {desc}" if desc else f"- {name}")
+        sig = _signature_str(_TOOLS[name])
+        desc = (_TOOL_DESCRIPTIONS.get(name, "") or "").split("\n", 1)[0].strip()
+        head = f"- {name}({sig})"
+        lines.append(f"{head} — {desc}" if desc else head)
     return "\n".join(lines)
 
 
@@ -170,4 +258,5 @@ __all__ = [
     "list_tools",
     "run_tools_in_plan",
     "tool_manifest",
+    "coerce_tool_args",
 ]
