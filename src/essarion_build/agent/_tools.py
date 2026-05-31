@@ -226,6 +226,24 @@ def apply_diff(path: str, old: str, new: str) -> str:
     return f"applied 1-occurrence patch to {path}"
 
 
+def delete_file(path: str) -> str:
+    """Delete a file under the sandbox root.
+
+    The prior content is recorded in the change log so the user can `/undo`
+    to restore it. Refuses anything that isn't a regular file (no recursive
+    directory removal — that's a footgun the agent shouldn't have).
+    """
+    p = _resolve(path)
+    if not p.is_file():
+        raise FileNotFoundError(f"not a file: {path}")
+    try:
+        _changes.current_changelog().record_delete(path, sandbox_root=_SANDBOX_ROOT)
+    except Exception:  # noqa: BLE001 - changelog must never block the delete
+        pass
+    p.unlink()
+    return f"deleted {path}"
+
+
 def run_shell(cmd: str, timeout: int = 30) -> str:
     """Run a shell command in the sandbox root, blocking until exit.
 
@@ -328,7 +346,7 @@ def list_background() -> str:
 
 # Tools that require user approval before running.
 SIDE_EFFECT_TOOLS = {
-    "write_file", "apply_diff", "run_shell",
+    "write_file", "apply_diff", "delete_file", "run_shell",
     "start_background", "kill_background",
 }
 
@@ -343,6 +361,7 @@ def register_all() -> None:
     sdk_tools.register_tool("glob", description="path-shaped glob from the sandbox root")(glob)
     sdk_tools.register_tool("write_file", description="write a file")(write_file)
     sdk_tools.register_tool("apply_diff", description="replace a unique snippet in a file")(apply_diff)
+    sdk_tools.register_tool("delete_file", description="delete a file (undoable)")(delete_file)
     sdk_tools.register_tool("run_shell", description="run a shell command (blocking)")(run_shell)
     sdk_tools.register_tool("start_background", description="start a background task; returns id")(start_background)
     sdk_tools.register_tool("check_background", description="status + recent output of a task")(check_background)

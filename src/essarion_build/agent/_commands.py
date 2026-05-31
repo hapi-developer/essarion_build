@@ -35,7 +35,7 @@ _HELP_GROUPS: list[tuple[str, list[str]]] = [
     ("project & files", ["/cd", "/pwd"]),
     ("changes & verify", ["/diff", "/undo", "/commit", "/verify", "/lint"]),
     ("background", ["/bg"]),
-    ("safety", ["/yolo"]),
+    ("safety", ["/auto", "/yolo"]),
     ("help", ["/help"]),
 ]
 
@@ -514,6 +514,34 @@ def _cmd_stream(console: Console, session: Session, args: str) -> CommandResult:
     state = "ON" if session.stream else "OFF"
     style = "ok" if session.stream else "meta"
     console.print(f"[{style}]streaming: {state}[/{style}]")
+    return "continue"
+
+
+def _cmd_auto(console: Console, session: Session, args: str) -> CommandResult:
+    """Toggle autonomous ("auto") mode.
+
+    When ON, an approved plan is executed autonomously with real disk tools
+    (write/edit/delete/shell) until the goal is done, instead of producing one
+    code blob to apply by hand.
+    """
+    arg = args.strip().lower()
+    if arg == "on":
+        session.autonomous = True
+    elif arg == "off":
+        session.autonomous = False
+    elif arg == "":
+        session.autonomous = not session.autonomous
+    else:
+        console.print("[err]usage: /auto [on|off][/err]")
+        return "continue"
+    state = "ON" if session.autonomous else "OFF"
+    style = "ok" if session.autonomous else "meta"
+    console.print(f"[{style}]autonomous mode: {state}[/{style}]")
+    if session.autonomous:
+        console.print(
+            "[hint]approved plans now run end-to-end on disk "
+            "(write/edit/delete/shell). /undo and /diff still work.[/hint]"
+        )
     return "continue"
 
 
@@ -1045,6 +1073,7 @@ COMMANDS: dict[str, tuple[Callable, str]] = {
     "/ask": (_cmd_ask, "quick reason() only, no draft phase"),
     "/cost": (_cmd_cost, "show session cost ledger or estimate against a path"),
     "/stream": (_cmd_stream, "toggle streamed draft output (token-by-token)"),
+    "/auto": (_cmd_auto, "toggle autonomous mode (run approved plans on disk)"),
     "/effort": (_cmd_effort, "show or set reasoning depth (quick/standard/deep/max/auto)"),
     "/whoami": (_cmd_whoami, "one-screen status: project + model + memory + budget"),
     "/summary": (_cmd_summary, "one-paragraph summary of this session — useful for commits/PRs"),

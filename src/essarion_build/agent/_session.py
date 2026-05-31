@@ -87,6 +87,10 @@ class Session(BaseModel):
     # sizes each task and routes to quick/standard/deep. Cheap on easy
     # tasks, deep only when warranted.
     effort: str = "auto"  # "quick" | "standard" | "deep" | "max" | "auto"
+    # "auto" permission mode: after plan approval, execute the plan autonomously
+    # with real disk tools (write/edit/delete/shell) instead of emitting one
+    # code blob to save by hand. The cloud defaults this on.
+    autonomous: bool = False
     history: list[TaskTurn] = Field(default_factory=list)
     total_usage: Usage = Field(default_factory=Usage)
     total_cost_usd: float = 0.0

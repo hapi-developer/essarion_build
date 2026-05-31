@@ -67,6 +67,13 @@ def _add_agent_args(parser: argparse.ArgumentParser) -> None:
         help="reasoning depth (default: auto — triage sizes each task)",
     )
     parser.add_argument(
+        "--autonomous",
+        "--auto",
+        action="store_true",
+        help="autonomous mode: execute approved plans end-to-end on disk "
+        "(write/edit/delete/shell) instead of emitting one code blob to apply",
+    )
+    parser.add_argument(
         "--resume",
         help="resume a prior session by id (see /load inside the REPL)",
     )
@@ -147,6 +154,8 @@ def _initial_session(args: argparse.Namespace, project: Project) -> Session:
             s.max_tokens = args.max_tokens
         if args.budget:
             s.budget_usd = args.budget
+        if getattr(args, "autonomous", False):
+            s.autonomous = True
         return s
 
     # New session, anchored to the project root.
@@ -161,6 +170,7 @@ def _initial_session(args: argparse.Namespace, project: Project) -> Session:
         budget_usd=args.budget,
         skills_mode=args.skills,
         effort=args.effort,
+        autonomous=getattr(args, "autonomous", False),
     )
 
 
@@ -234,10 +244,13 @@ def run_agent(argv: list[str] | None = None) -> int:
     if args.task:
         # Non-interactive single-task mode — pipes-friendly.
         from ._background import shutdown_manager
-        from ._loop import run_turn
+        from ._loop import run_turn, run_turn_autonomous
 
         try:
-            run_turn(console, session, args.task)
+            if session.autonomous:
+                run_turn_autonomous(console, session, args.task)
+            else:
+                run_turn(console, session, args.task)
         finally:
             shutdown_manager()
         return 0
