@@ -7,7 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.4.0] - 2026-06-01
+## [0.3.3] - 2026-06-01
+
+### Added
+
+- python -m essarion_build now launches the agent as a PATH-independent
+  fallback, calling the same entry point as the essarion /
+  essarion-build console scripts.
+
+## [0.3.2] - 2026-06-01
 
 The agentic release — everything since the published 0.3.1. Autonomous "auto"
 mode, lifecycle hooks, a Claude-Code-style CLI, real-model tool-call robustness,
