@@ -83,7 +83,7 @@ from .exceptions import (
     ReasoningFormatError,
 )
 
-__version__ = "0.4.1"
+__version__ = "0.3.2"
 
 __all__ = [
     # Subpackages
