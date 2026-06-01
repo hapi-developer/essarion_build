@@ -43,6 +43,22 @@ def test_no_backend_bound_is_a_clear_error() -> None:
     assert "--desktop" in str(e.value)
 
 
+def test_input_driver_dispatch_by_platform(monkeypatch) -> None:
+    """The right OS input driver is selected per platform (drivers stubbed so no
+    real display/Quartz/SendInput is touched)."""
+    from essarion_build.computer import _desktop
+
+    monkeypatch.setattr(_desktop, "X11Input", lambda display=None: ("x11", display))
+    monkeypatch.setattr(_desktop, "QuartzInput", lambda: ("quartz",))
+    monkeypatch.setattr(_desktop, "WindowsInput", lambda: ("win",))
+    monkeypatch.setattr(_desktop.sys, "platform", "darwin")
+    assert _desktop.make_input_driver()[0] == "quartz"
+    monkeypatch.setattr(_desktop.sys, "platform", "win32")
+    assert _desktop.make_input_driver()[0] == "win"
+    monkeypatch.setattr(_desktop.sys, "platform", "linux")
+    assert _desktop.make_input_driver()[0] == "x11"
+
+
 # ---- action tools over the fake backend ----
 
 def _paint_app(be: FakeDesktopBackend, name: str, kw: dict) -> None:
@@ -112,35 +128,6 @@ def _have_ocr() -> bool:
         return False
 
 
-@pytest.mark.skipif(not _have_real_desktop() or not _have_ocr(), reason="no display / no OCR engine")
-def test_desktop_text_content_ocr_enables_text_expectations() -> None:
-    """With OCR available, the desktop tier can read on-screen text — so text
-    expectations like \"'Welcome back' appears\" become checkable, not 'unclear'."""
-    from PIL import Image, ImageDraw, ImageFont
-
-    from essarion_build.computer import DesktopBackend, bind_desktop, desktop_observe
-    from essarion_build.computer.tools import unregister_desktop_tools
-
-    be = DesktopBackend.launch()
-    try:
-        img = Image.new("RGB", (640, 200), "white")
-        d = ImageDraw.Draw(img)
-        d.text((30, 80), "Welcome back, user", fill="black", font=ImageFont.load_default(size=36))
-        be._grab = lambda: img  # type: ignore  # feed a known frame to OCR
-
-        assert "Welcome back" in be.text_content()
-
-        # And the expectation check uses it: an "appears" claim now resolves.
-        from essarion_build.computer import check_expectation, parse_expectation, reduce_events
-        exp = parse_expectation("a 'Welcome back' message appears")
-        res = check_expectation(exp, reduce_events([]), page_text=be.text_content())
-        assert res.met
-    finally:
-        unregister_desktop_tools()
-        bind_desktop(None)
-        be.close()
-
-
 @pytest.mark.skipif(not _have_real_desktop(), reason="no DISPLAY / desktop stack")
 def test_real_desktop_end_to_end() -> None:
     """One real display, one backend: verify the primitives (move/capture/diff)
@@ -167,13 +154,32 @@ def test_real_desktop_end_to_end() -> None:
         w, h = be.screen_size()
         assert w > 0 and h > 0
         be.move(321, 222)
-        p = be._d.screen().root.query_pointer()
+        p = be.input.display.screen().root.query_pointer()
         assert (p.root_x, p.root_y) == (321, 222)        # real absolute move
         png = be.screenshot()
         assert png[:8] == b"\x89PNG\r\n\x1a\n" and len(png) > 1000  # real capture
 
-        root = be._d.screen().root
-        gc = root.create_gc(foreground=be._d.screen().white_pixel)
+        # --- OCR: with the engine present, on-screen text is readable, so text
+        #     expectations resolve. Feed a known frame, then restore real grab. ---
+        if _have_ocr():
+            from PIL import Image, ImageDraw, ImageFont
+            from essarion_build.computer import check_expectation, parse_expectation, reduce_events
+
+            real_grab = be._grab
+            img = Image.new("RGB", (640, 200), "white")
+            ImageDraw.Draw(img).text((30, 80), "Welcome back, user", fill="black",
+                                     font=ImageFont.load_default(size=36))
+            be._grab = lambda: img  # type: ignore
+            try:
+                assert "Welcome back" in be.text_content()
+                res = check_expectation(parse_expectation("a 'Welcome back' message appears"),
+                                        reduce_events([]), page_text=be.text_content())
+                assert res.met
+            finally:
+                be._grab = real_grab  # type: ignore
+
+        root = be.input.display.screen().root
+        gc = root.create_gc(foreground=be.input.display.screen().white_pixel)
 
         # --- full agent loop: scripted provider moves + clicks; the click draws
         #     a real rectangle, and the screen-diff must report it. ---
@@ -181,7 +187,7 @@ def test_real_desktop_end_to_end() -> None:
         def click_and_paint(*a, **k):
             orig_click(*a, **k)
             root.fill_rectangle(gc, 150, 120, 500, 360)
-            be._d.sync()
+            be.input.display.sync()
         be.click = click_and_paint  # type: ignore
 
         bind_desktop(be, settle=0.1, provider="anthropic", model="claude-haiku-4-5")

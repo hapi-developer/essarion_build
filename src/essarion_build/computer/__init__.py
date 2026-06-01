@@ -50,7 +50,14 @@ from ._actions import (
     desktop_type,
 )
 from ._backend import Backend, FakeBackend, PlaywrightBackend
-from ._desktop import DesktopBackend, FakeDesktopBackend
+from ._desktop import (
+    DesktopBackend,
+    FakeDesktopBackend,
+    QuartzInput,
+    WindowsInput,
+    X11Input,
+    make_input_driver,
+)
 from ._events import ObservedEvent, severity_rank
 from ._expectations import (
     Expectation,
@@ -96,6 +103,10 @@ __all__ = [
     # Desktop tier
     "DesktopBackend",
     "FakeDesktopBackend",
+    "make_input_driver",
+    "X11Input",
+    "QuartzInput",
+    "WindowsInput",
     "ScreenDiffer",
     "ChangedRegion",
     "bind_desktop",

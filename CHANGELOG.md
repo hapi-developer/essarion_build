@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-06-01
+
+Past the computer-use boundaries: the model can **see**, the desktop tier is
+**cross-platform**, the desktop can **read text**, and the **cloud** can drive a
+browser.
+
+### Added
+- **Vision seam (the model SEES).** Message content can be a list of neutral
+  blocks (`text_block` / `image_block`); each provider renders them to its
+  native multimodal shape (OpenAI/OpenRouter, Anthropic, Gemini), and a plain
+  string still flows through unchanged. `browser_screenshot` / `desktop_screenshot`
+  now capture the image and the autonomous loop attaches it to the next message —
+  but only on vision-capable models (otherwise it notes the capture, never sends
+  blind). Verified live: a real model read text straight from image pixels.
+- **Cross-platform desktop input.** Input lives behind a per-OS `InputDriver`:
+  `X11Input` (Linux/XTEST, the CI-tested reference), `QuartzInput` (macOS,
+  CoreGraphics), `WindowsInput` (Windows, ctypes SendInput). Capture (mss) and
+  the screen-diff were already cross-platform. (macOS/Windows drivers are
+  written from the documented APIs but not exercised by this Linux CI.)
+- **Desktop OCR.** With `pytesseract` + a `tesseract` binary, the desktop tier
+  reads on-screen text, so text expectations ("'Welcome back' appears") resolve
+  instead of being "unclear".
+
+### Cloud (essarion_build_cloud)
+- The worker can drive the headless-browser tier via `ESSARION_COMPUTER_USE=1`
+  (desktop control is intentionally not offered in a remote container).
+
+### Verified
+- 579 passing; real X11 under Xvfb (move/capture/diff + OCR + full agent loop);
+  live vision read-through; cloud worker driving a real headless browser.
+
 ## [0.5.0] - 2026-06-01
 
 **Computer use — desktop tier.** Computer use now extends from the browser to
