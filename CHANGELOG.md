@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Quieter todo checklist.** The live checklist now renders only when it
+  actually advances: the full plan prints once, then each step shows just the
+  line(s) that changed (a `☑` done + the next `▶` doing), and a re-sent
+  identical list prints nothing. (The model is also told to call `update_todos`
+  only when starting/finishing a step, not after every action.)
+- **Edits show a diffstat, not the code.** A successful `apply_diff` now renders
+  a compact `+added −removed` line-count summary instead of dumping the changed
+  code; use `/diff` to view the actual change.
+
 ## [0.3.5] - 2026-06-01
 
 The Claude-Code-parity release. The autonomous agent gains **conversation

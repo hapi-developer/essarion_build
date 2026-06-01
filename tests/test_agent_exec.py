@@ -316,6 +316,40 @@ def test_execute_tracks_and_renders_todos(console, session) -> None:
     assert "Scaffold the app" in console.file.getvalue()
 
 
+def test_render_todos_only_renders_changes(console) -> None:
+    """First call shows the full plan; an unchanged call is silent; an advance
+    shows only the changed lines (no full re-print)."""
+    plan = [{"text": "A", "status": "doing"}, {"text": "B", "status": "todo"}, {"text": "C", "status": "todo"}]
+    _ui.render_todos(console, plan, None)
+    first = console.file.getvalue()
+    assert "todo" in first and "A" in first and "B" in first and "C" in first
+
+    before = console.file.getvalue()  # re-sending the same list → nothing
+    _ui.render_todos(console, plan, plan)
+    assert console.file.getvalue() == before
+
+    nxt = [{"text": "A", "status": "done"}, {"text": "B", "status": "doing"}, {"text": "C", "status": "todo"}]
+    _ui.render_todos(console, nxt, plan)
+    delta = console.file.getvalue()[len(before):]
+    assert "A" in delta and "B" in delta  # the two items that advanced
+    assert "C" not in delta               # unchanged item not reprinted
+    assert "todo\n" not in delta          # and no full-list header on a delta
+
+
+def test_render_action_shows_diffstat_not_code(console) -> None:
+    _ui.render_action(console, verb="Edited", target="app.py", ok=True, diffstat=(12, 3))
+    out = console.file.getvalue()
+    assert "Edited" in out and "app.py" in out
+    assert "+12" in out and "−3" in out   # counts, not the code body
+
+
+def test_diff_stat_counts() -> None:
+    from essarion_build.agent._agent_exec import _diff_stat
+
+    assert _diff_stat({"old": "a\nb\nc", "new": "a\nX\nc\nd"}) == (2, 1)
+    assert _diff_stat({"old": "", "new": ""}) == (0, 0)
+
+
 def test_render_action_redacts_secrets(console) -> None:
     """Keys/tokens are stripped from rendered tool output."""
     key = "sk-or-v1-abcdef0123456789abcdef0123"

@@ -161,8 +161,10 @@ def _system_prompt(ctx: Context, memory: str = "") -> str:
         "  Up to 4 options per question (an 'Other' choice is added "
         "automatically); you may ask a few at once. Don't overuse it — only for "
         "decisions that materially change the outcome.\n"
-        "- For any multi-step task, keep a short checklist with update_todos: set "
-        "it up front and flip items to 'doing'/'done' as you progress.\n"
+        "- For a multi-step task, set up a short checklist ONCE with update_todos, "
+        "then call it again only when you start or finish a step (flip a single "
+        "item to 'doing'/'done') — not after every action, and never re-send an "
+        "unchanged list.\n"
         "  <tool_call name=\"update_todos\">{\"todos\": [{\"text\": \"Scaffold the app\", "
         "\"status\": \"doing\"}, {\"text\": \"Add tests\", \"status\": \"todo\"}]}</tool_call>\n"
         "  status is one of: todo | doing | done.\n"
@@ -271,15 +273,20 @@ def _target_for(name: str, args: dict[str, Any]) -> str:
     return str(args.get("task_id", ""))
 
 
-def _edit_diff(args: dict[str, Any], max_lines: int = 6) -> str:
-    """A tiny -old/+new diff for an apply_diff edit, for the compact view."""
-    old = str(args.get("old", ""))
-    new = str(args.get("new", ""))
-    if not old and not new:
-        return ""
-    lines = [f"-{ln}" for ln in old.splitlines()[:max_lines]]
-    lines += [f"+{ln}" for ln in new.splitlines()[:max_lines]]
-    return "\n".join(lines)
+def _diff_stat(args: dict[str, Any]) -> tuple[int, int]:
+    """(added, removed) line counts for an apply_diff edit — a compact summary
+    instead of dumping the code. The full change is viewable with /diff."""
+    import difflib
+
+    old = str(args.get("old", "")).splitlines()
+    new = str(args.get("new", "")).splitlines()
+    added = removed = 0
+    for ln in difflib.unified_diff(old, new, n=0):
+        if ln.startswith("+") and not ln.startswith("+++"):
+            added += 1
+        elif ln.startswith("-") and not ln.startswith("---"):
+            removed += 1
+    return added, removed
 
 
 # Tools whose (successful) output is worth showing as a short collapsed tail.
@@ -475,10 +482,12 @@ def execute(
                 result_blocks.append(f'<tool_result name="ask_user">{body}</tool_result>')
                 continue
 
-            # update_todos maintains the agent's visible checklist.
+            # update_todos maintains the agent's visible checklist. We only
+            # render what changed (and nothing for a no-op call).
             if name == "update_todos":
-                latest_todos = _coerce_todos(args)
-                _ui.render_todos(console, latest_todos)
+                new_todos = _coerce_todos(args)
+                _ui.render_todos(console, new_todos, latest_todos)
+                latest_todos = new_todos
                 result_blocks.append('<tool_result name="update_todos">todo list updated</tool_result>')
                 continue
 
@@ -503,10 +512,10 @@ def execute(
 
             verb = _verb_for(name, existed)
             target = _target_for(name, args)
-            diff = _edit_diff(args) if (name == "apply_diff" and ok) else ""
+            diffstat = _diff_stat(args) if (name == "apply_diff" and ok) else None
             show_output = (not ok) or name in _SHOW_OUTPUT or name.startswith(("browser_", "desktop_"))
             _ui.render_action(
-                console, verb=verb, target=target, ok=ok, diff=diff,
+                console, verb=verb, target=target, ok=ok, diffstat=diffstat,
                 output=body if show_output else "",
             )
             actions_log.append(f"{verb} {target}".strip() + ("" if ok else " (failed)"))

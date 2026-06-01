@@ -248,31 +248,33 @@ def render_action(
     target: str = "",
     ok: bool = True,
     detail: str = "",
-    diff: str = "",
+    diffstat: tuple[int, int] | None = None,
     output: str = "",
 ) -> None:
     """One compact, faded line per agent action — Claude-Code style.
 
-    e.g. ``✓ Created  index.html`` or ``✓ Ran  npm test``. A long target is
-    ellipsized; `diff` renders a small colored diff (for edits); `output`
-    renders a short dim tail (for commands); failures show the error inline.
+    e.g. ``✓ Created  index.html`` or ``✓ Edited  app.py  +12 −3``. A long
+    target is ellipsized; `diffstat` shows added/removed line counts for an edit
+    (the code itself is viewable with /diff); `output` renders a short dim tail
+    (for commands); failures show the error inline.
     """
     mark = "[ok]✓[/ok]" if ok else "[err]✗[/err]"
     tgt = _ellipsize(redact_secrets(target), 72)
     line = f"{mark} [meta]{verb}[/meta]"
     if tgt:
         line += f"  [hint]{tgt}[/hint]"
+    if diffstat is not None:
+        added, removed = diffstat
+        stat = []
+        if added:
+            stat.append(f"[diff.add]+{added}[/diff.add]")
+        if removed:
+            stat.append(f"[diff.remove]−{removed}[/diff.remove]")
+        if stat:
+            line += "  " + " ".join(stat)
     if detail:
         line += f" [hint]{detail}[/hint]"
     console.print(line)
-    if diff.strip():
-        for ln in redact_secrets(diff).splitlines():
-            if ln.startswith("+"):
-                console.print(f"  [diff.add]{ln}[/diff.add]")
-            elif ln.startswith("-"):
-                console.print(f"  [diff.remove]{ln}[/diff.remove]")
-            else:
-                console.print(f"  [hint]{ln}[/hint]")
     tail = _short_tail(redact_secrets(output))
     if tail:
         style = "err" if not ok else "hint"
@@ -558,17 +560,36 @@ def confirm_action(console: Console, verb: str, target: str, reason: str = "", *
 _TODO_GLYPH = {"done": "[ok]☑[/ok]", "doing": "[brand]▶[/brand]", "todo": "[hint]☐[/hint]"}
 
 
-def render_todos(console: Console, todos: list[dict]) -> None:
-    """Render the agent's task checklist — one line per item with a state glyph,
-    Claude-Code style, so a long autonomous task stays legible."""
+def _todo_line(console: Console, item: dict) -> None:
+    text = str(item.get("text", "")).strip()
+    if not text:
+        return
+    status = str(item.get("status", "todo")).lower()
+    glyph = _TODO_GLYPH.get(status, _TODO_GLYPH["todo"])
+    style = "meta" if status == "done" else ("brand" if status == "doing" else "hint")
+    console.print(f"  {glyph} [{style}]{_ellipsize(text, 84)}[/{style}]")
+
+
+def render_todos(console: Console, todos: list[dict], prev: list[dict] | None = None) -> None:
+    """Render the agent's checklist — but only when it actually advances, so a
+    long run stays legible. The first call (or any change to the *plan* itself)
+    prints the whole list; after that only the items whose status just changed
+    are shown (typically one ☑ done + the next ▶ doing); an unchanged call (the
+    model re-sending the same list) prints nothing."""
+    todos = [t for t in todos if str(t.get("text", "")).strip()]
     if not todos:
         return
-    console.print("[meta]todo[/meta]")
+    prev = prev or []
+    new_texts = [t.get("text") for t in todos]
+    old_texts = [t.get("text") for t in prev]
+    if not prev or new_texts != old_texts:
+        # First time, or the set/order of tasks changed → show the full plan.
+        console.print("[meta]todo[/meta]")
+        for item in todos:
+            _todo_line(console, item)
+        return
+    # Same tasks — show only the ones that just changed state (the step advance).
+    old_status = {t.get("text"): str(t.get("status", "")).lower() for t in prev}
     for item in todos:
-        text = str(item.get("text", "")).strip()
-        if not text:
-            continue
-        status = str(item.get("status", "todo")).lower()
-        glyph = _TODO_GLYPH.get(status, _TODO_GLYPH["todo"])
-        style = "meta" if status == "done" else ("brand" if status == "doing" else "hint")
-        console.print(f"  {glyph} [{style}]{_ellipsize(text, 84)}[/{style}]")
+        if str(item.get("status", "")).lower() != old_status.get(item.get("text")):
+            _todo_line(console, item)
