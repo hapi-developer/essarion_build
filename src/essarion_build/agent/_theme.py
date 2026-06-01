@@ -68,14 +68,14 @@ BANNER = "[brand]" + _with_chevron(_WORDMARK) + "[/brand]"
 BANNER_COMPACT = "[brand]> ESSARION[/brand]"
 
 TAGLINE = (
-    "[brand.dim]CLI coding agent · plan-first · token-efficient · BYOK[/brand.dim]\n"
+    "[brand.dim]CLI coding agent · autonomous · token-efficient · BYOK[/brand.dim]\n"
     "[meta]by Essarion · amplifies any LLM with senior-engineer reasoning[/meta]"
 )
 
 # "Getting started" tips shown under the wordmark (Gemini-style welcome box).
 TIPS = [
-    "Describe a task in plain language — the agent plans first, then acts.",
-    "Turn on autonomous mode with [key]/auto[/key] to build end-to-end on disk.",
-    "Run [key]/help[/key] for commands, or [key]/hooks[/key] to see lifecycle hooks.",
-    "Create an [key].essarion/config.toml[/key] to set defaults, hooks, and verify checks.",
+    "Describe a task in plain language — the agent plans internally, then builds it on disk.",
+    "It's autonomous by default: it writes, edits, runs, and fixes until done. [key]/auto off[/key] for plan-first.",
+    "It can ask you questions mid-task, and [key]/budget[/key] sets a spending cap (none by default).",
+    "Run [key]/help[/key] for commands, or create an [key].essarion/config.toml[/key] for defaults & hooks.",
 ]

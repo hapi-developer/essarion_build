@@ -7,6 +7,78 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.5] - 2026-06-01
+
+The Claude-Code-parity release. The autonomous agent gains **conversation
+memory** (it remembers what it built and what's running), an interactive
+**`ask_user`** tool, a **live todo checklist**, **permission guardrails** with a
+dangerous-command denylist, **prompt caching** across multi-step turns, a live
+**"Thinking…"** spinner, **collapsed** Claude-Code-style output, **secret
+redaction**, and **no spending cap** by default.
+
+### Added
+
+- **Interactive `ask_user` tool.** Mid-task the agent can ask you multiple-choice
+  questions (Claude-Code style): up to 4 options plus an auto-added "Other (type
+  your own)", and several questions in a row. Answer by number or type your own.
+  Non-blocking in pipes/CI — with no TTY it proceeds with sensible defaults.
+- **Conversation memory in the autonomous loop.** Every turn now carries a recap
+  of prior turns and live background-process state, so follow-ups are answered
+  precisely from memory instead of groping the filesystem:
+  - the **concrete actions** of the most recent turn ("Created index.html",
+    "Ran ls -l", "Started Simple HTTP Server") — for "what did you just do?";
+  - **running background processes** with an inferred reachable URL
+    (`http://localhost:8000`) — for "what's running?" / "how do I reach it?";
+  - recently-finished background tasks with their exit status.
+- **Live "Thinking…" spinner** (the rotating `|/-\` bar) during every model
+  call, so a step never looks frozen while the model works.
+- **Permission policy + guardrails.** The autonomous executor now screens every
+  action: reads are free, writes/edits are allowed (undoable), and shell
+  commands are checked against a built-in dangerous-command list — catastrophic
+  ones (`rm -rf /`, `mkfs`, fork bombs, `dd of=/dev/…`) are **always refused**,
+  risky ones (`sudo`, `git push --force`, `rm -rf …`, `curl … | sh`) prompt for
+  approval (and are denied when there's no interactive user). Configure via
+  `[permissions]` in `.essarion/config.toml` (`shell`/`write`/`delete` =
+  `allow|ask|deny`, plus `allow`/`ask`/`deny` regex lists). `/yolo` downgrades
+  "ask" to "allow" — but never the catastrophic list.
+- **Live todo checklist.** The agent maintains a task list via an `update_todos`
+  tool and renders it with state glyphs (`☐` todo, `▶` doing, `☑` done) as it
+  works, so long autonomous runs stay legible. Stored on the turn for memory.
+- **Secret redaction in output + memory.** API keys / tokens / private keys are
+  stripped from rendered tool output and from the conversation memory that rides
+  along in the prompt.
+
+### Performance
+
+- **Prompt caching across multi-step turns.** The executor's system prompt is
+  reordered so the stable prefix (protocol + tool manifest) comes first for
+  cross-turn cache reuse, and the Anthropic provider now also caches the
+  *growing message history* (an ephemeral breakpoint on the latest message), so
+  each step reuses prior steps' cached tokens instead of re-billing them. Cache
+  hits are now shown in the usage line and footer (`385 tokens (210 cached)`).
+
+### Changed
+
+- **No spending cap by default.** The budget is off (`0`) unless you set one —
+  the status line just meters tokens + cost (no "`/ $1.00`"). `/budget` shows
+  spend and (interactively) prompts for a cap; `/budget <amount>` or `--budget`
+  sets one; `/budget off` clears it.
+- **Collapsed, Claude-Code-style output.** Each action is one compact, faded line
+  — `Created index.html`, `Edited styles.css` (+ a small diff), `Ran npm test`
+  (+ a short output tail) — instead of dumping full file contents and a result
+  panel per call. The end-of-turn full diff is replaced by a one-line change
+  summary (`/diff` for the detail).
+- **Planning is silent in autonomous mode** — computed internally and fed to the
+  executor, with no plan/tradeoffs/verdict wall and no "build" header. A question
+  (as opposed to a build task) is answered directly in prose, without running
+  tools. Long answers are shown in full (no 400-char clip).
+- Refreshed the banner tagline/tips to reflect autonomous-by-default.
+
+### Fixed
+
+- The agent no longer invents placeholder targets (e.g. running `curl`/`ping`
+  against `example.com`) to answer a question — it answers from context, or asks.
+
 ## [0.3.4] - 2026-06-01
 
 The autonomous release. The CLI agent is now **agentic by default** — like

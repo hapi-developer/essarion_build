@@ -61,6 +61,16 @@ class TaskTurn(BaseModel):
     verdict: str = ""
     code: str = ""
     defense: str = ""
+    # One-line summary of what the autonomous turn actually did (the executor's
+    # <done> summary). Fed into the next turn's conversation memory so the agent
+    # remembers what it built when the user asks a follow-up.
+    summary: str = ""
+    # The concrete actions taken this turn ("Created index.html", "Ran ls -l",
+    # "Started Simple HTTP Server"), in order. Surfaced in the next turn's memory
+    # so the agent can answer "what did you just do?" with specifics.
+    actions: list[str] = Field(default_factory=list)
+    # The agent's final task checklist for the turn (todo/doing/done items).
+    todos: list[dict] = Field(default_factory=list)
     skills_used: list[str] = Field(default_factory=list)
     files_touched: list[str] = Field(default_factory=list)
     usage: Usage = Field(default_factory=Usage)
@@ -81,7 +91,10 @@ class Session(BaseModel):
     escalate_model: str | None = None  # set on /escalate or auto-pick
     stream: bool = False  # True → stream draft tokens to the console
     max_tokens: int = 4096
-    budget_usd: float = 1.00
+    # Spending cap in USD. 0.0 (the default) means NO cap — we just meter and
+    # show tokens + cost. Set one with `/budget <amount>` to halt the turn when
+    # projected spend would cross it.
+    budget_usd: float = 0.0
     skills_mode: str = "auto"  # "auto" | "all" | "none"
     # Reasoning depth. The agent defaults to "auto" — a tiny triage call
     # sizes each task and routes to quick/standard/deep. Cheap on easy

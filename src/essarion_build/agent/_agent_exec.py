@@ -34,6 +34,7 @@ from pydantic import BaseModel, Field
 from .. import Context, Usage
 from .. import tools as sdk_tools
 from ._changes import current_changelog
+from ._permissions import ASK, DENY, PermissionPolicy
 from ._session import Session, TaskTurn, estimate_cost_usd
 from . import _ui
 
@@ -83,16 +84,52 @@ class ExecResult(BaseModel):
     """Outcome of an autonomous run."""
 
     files_touched: list[str] = Field(default_factory=list)
+    # Human-readable actions taken this run, in order ("Created index.html",
+    # "Ran ls -l", "Started Simple HTTP Server"). Stored on the turn for memory.
+    actions: list[str] = Field(default_factory=list)
+    # The agent's latest checklist (todo/doing/done), if it kept one.
+    todos: list[dict] = Field(default_factory=list)
     steps: int = 0
     summary: str = ""
     stopped_reason: str = "done"  # done | max_steps | budget | no_action | error
 
 
-def _system_prompt(ctx: Context) -> str:
-    """Build the executor's system prompt: protocol + tool manifest + context."""
+def _coerce_todos(args: dict[str, Any]) -> list[dict]:
+    """Normalize update_todos args into [{text, status}] (status: todo/doing/done)."""
+    raw = args.get("todos")
+    out: list[dict] = []
+    if isinstance(raw, list):
+        for it in raw:
+            if isinstance(it, dict) and str(it.get("text", "")).strip():
+                status = str(it.get("status", "todo")).lower()
+                out.append({"text": str(it["text"]).strip(),
+                            "status": status if status in {"todo", "doing", "done"} else "todo"})
+            elif isinstance(it, str) and it.strip():
+                out.append({"text": it.strip(), "status": "todo"})
+    return out
+
+
+def _infer_url(cmd: str) -> str | None:
+    """Best-effort 'this server is probably reachable at …' for a background
+    command, so 'how do I reach the server?' can be answered from memory."""
+    m = re.search(r"(?:--port[=\s]+|-p\s+|:)(\d{2,5})\b", cmd)
+    if not m:
+        m = re.search(r"http\.server\s+(\d{2,5})", cmd)
+    if m:
+        return f"http://localhost:{m.group(1)}"
+    # Common framework defaults when no explicit port is given.
+    for needle, port in (("next", "3000"), ("vite", "5173"), ("flask", "5000"),
+                         ("rails", "3000"), ("http.server", "8000")):
+        if needle in cmd:
+            return f"http://localhost:{port}"
+    return None
+
+
+def _system_prompt(ctx: Context, memory: str = "") -> str:
+    """Build the executor's system prompt: protocol + memory + manifest + context."""
     manifest = sdk_tools.tool_manifest()
     context_block = ctx.to_prompt_block()
-    return (
+    protocol = (
         "You are an autonomous coding agent (like Claude Code or Codex) working "
         "directly inside a sandboxed project workspace. Accomplish the user's "
         "GOAL end to end by taking actions with tools — you can create, edit and "
@@ -104,26 +141,152 @@ def _system_prompt(ctx: Context) -> str:
         "- After each batch you receive <tool_result> blocks. Read them and "
         "continue. Inspect before you edit (read_file/list_dir/grep/glob), make "
         "focused changes (write_file for new files, apply_diff for edits, "
-        "delete_file to remove), and verify with run_shell (run the tests/build "
-        "and fix failures, then re-run) whenever you can.\n"
-        "- Build the COMPLETE solution, not a stub. A real task is many files: "
-        "create every source file, config, entry point, and test the goal needs. "
-        "Do NOT stop after a single file — keep going until the whole thing is "
-        "in place and works.\n"
-        "- After writing code, actually run it (run_shell / start_background) to "
-        "prove it works; if a command fails, read the error, fix the files, and "
-        "re-run. For long-running processes (dev servers, installs) use "
-        "start_background and poll with check_background.\n"
-        "- Work autonomously and keep going across many steps. Do NOT ask the "
-        "user questions, narrate a plan and stop, or wait for approval — just do "
-        "the work. Every step should contain at least one tool call until you "
-        "are genuinely finished.\n"
-        "- When (and only when) the ENTIRE goal is complete and verified, emit "
-        "exactly:\n"
-        "  <done>a one-line summary of what you built</done>\n\n"
-        f"{manifest}\n\n"
-        f"{context_block}"
+        "delete_file to remove), and verify with run_shell when you can.\n"
+        "- Build the COMPLETE solution, not a stub: create every source file, "
+        "config, entry point, and test the goal needs. Don't stop after one "
+        "file. After writing code, run it (run_shell / start_background) to "
+        "prove it works; if a command fails, read the error, fix it, and re-run.\n"
+        "- If the user is just ASKING A QUESTION or chatting (not asking you to "
+        "change the project), answer directly in prose and emit <done> — do NOT "
+        "run tools or modify files just to answer. Use the CONVERSATION SO FAR "
+        "and BACKGROUND PROCESSES below to recall what you already did.\n"
+        "- Only act on real targets. Never invent placeholder values "
+        "(example.com, <SERVER_IP>, foo.txt) or run commands against hosts or "
+        "services you weren't asked about. If something is unknown, ask.\n"
+        "- You normally work without interrupting the user. But if you hit a "
+        "genuine fork only they can resolve (ambiguous requirements, a real "
+        "choice between approaches), ask with:\n"
+        "  <tool_call name=\"ask_user\">{\"questions\": [{\"question\": \"...\", "
+        "\"header\": \"short label\", \"options\": [\"A\", \"B\", \"C\"]}]}</tool_call>\n"
+        "  Up to 4 options per question (an 'Other' choice is added "
+        "automatically); you may ask a few at once. Don't overuse it — only for "
+        "decisions that materially change the outcome.\n"
+        "- For any multi-step task, keep a short checklist with update_todos: set "
+        "it up front and flip items to 'doing'/'done' as you progress.\n"
+        "  <tool_call name=\"update_todos\">{\"todos\": [{\"text\": \"Scaffold the app\", "
+        "\"status\": \"doing\"}, {\"text\": \"Add tests\", \"status\": \"todo\"}]}</tool_call>\n"
+        "  status is one of: todo | doing | done.\n"
+        "- Some commands need approval or are blocked by the user's permission "
+        "policy. If a tool result says an action was blocked, adapt (try another "
+        "approach) or ask the user — do NOT just retry the same command.\n"
+        "- When the goal is complete (or the question answered), emit exactly:\n"
+        "  <done>a one-line summary of what you did</done>"
     )
+    # Order matters for prompt caching: the stable prefix (protocol + tool
+    # manifest, identical every turn) comes first so providers can cache it
+    # across turns; the volatile parts (memory, picked skills, notes) come last.
+    parts = [protocol, manifest]
+    if memory.strip():
+        parts.append(memory.strip())
+    parts.append(context_block)
+    return "\n\n".join(p for p in parts if p and p.strip())
+
+
+def _conversation_memory(session: Session) -> str:
+    """A recap of prior turns (with the concrete actions of the most recent one)
+    plus live background-process state, so a follow-up — 'what did you just do?',
+    'what's running?', 'how do I reach the server?' — is answered precisely from
+    memory instead of blindly groping the filesystem."""
+    history = getattr(session, "history", None) or []
+    lines: list[str] = []
+    for i, t in enumerate(history[-6:]):
+        is_last = i == len(history[-6:]) - 1
+        task = " ".join((t.task or "").split())[:200]
+        summary = " ".join((getattr(t, "summary", "") or getattr(t, "verdict", "") or "").split())[:200]
+        files = ", ".join((t.files_touched or [])[:10])
+        entry = f'- You asked: "{task}"'
+        if summary:
+            entry += f" → {summary}"
+        if files:
+            entry += f" [files: {files}]"
+        # For the MOST RECENT turn, spell out exactly what was done so the user
+        # can ask precise follow-ups about it.
+        actions = getattr(t, "actions", None) or []
+        if is_last and actions:
+            shown = actions[:14]
+            entry += "\n    actions just taken:\n" + "\n".join(f"      · {a}" for a in shown)
+            if len(actions) > len(shown):
+                entry += f"\n      · (+{len(actions) - len(shown)} more)"
+        lines.append(entry)
+
+    # Live background-process state: running ones (with a reachable-URL hint for
+    # servers) and the most recent finished ones (with exit status).
+    running: list[str] = []
+    finished: list[str] = []
+    try:
+        from . import _background
+
+        for bt in _background.current_manager().poll_all():
+            cmd = getattr(bt, "cmd", "") or ""
+            if getattr(bt, "is_running", False):
+                url = _infer_url(cmd)
+                tail = f" — likely reachable at {url}" if url else ""
+                running.append(f"- [{bt.id}] {bt.name}: `{cmd}` (running{tail})")
+            else:
+                code = getattr(bt, "exit_code", None)
+                status = getattr(bt, "status", "finished")
+                finished.append(
+                    f"- [{bt.id}] {bt.name}: `{cmd}` ({status}"
+                    + (f", exit {code}" if code is not None else "") + ")"
+                )
+    except Exception:  # noqa: BLE001 - memory must never break a turn
+        pass
+
+    blocks: list[str] = []
+    if lines:
+        blocks.append("CONVERSATION SO FAR (earlier turns this session, oldest→newest):\n" + "\n".join(lines))
+    if running:
+        blocks.append("BACKGROUND PROCESSES still running (you started these):\n" + "\n".join(running))
+    if finished:
+        blocks.append("RECENTLY FINISHED background tasks:\n" + "\n".join(finished[-4:]))
+    # Redact any secrets (keys/tokens) that leaked into a command or summary
+    # before they ride along in the prompt.
+    return _ui.redact_secrets("\n\n".join(blocks))
+
+
+# Per-tool verb + how to show its result in the compact action line.
+def _verb_for(name: str, existed: bool) -> str:
+    if name == "write_file":
+        return "Updated" if existed else "Created"
+    return {
+        "apply_diff": "Edited", "delete_file": "Deleted", "read_file": "Read",
+        "list_dir": "Listed", "grep": "Searched", "find_files": "Searched",
+        "glob": "Searched", "run_shell": "Ran", "start_background": "Started",
+        "check_background": "Checked task", "wait_background": "Waited on task",
+        "kill_background": "Killed task", "list_background": "Listed tasks",
+    }.get(name, f"Used {name}")
+
+
+def _target_for(name: str, args: dict[str, Any]) -> str:
+    if name in {"write_file", "apply_diff", "delete_file", "read_file"}:
+        return str(args.get("path", ""))
+    if name == "list_dir":
+        return str(args.get("path", "."))
+    if name in {"grep", "find_files", "glob"}:
+        return str(args.get("pattern", ""))
+    if name == "run_shell":
+        return str(args.get("cmd", args.get("command", "")))
+    if name == "start_background":
+        return str(args.get("name") or args.get("cmd", ""))
+    return str(args.get("task_id", ""))
+
+
+def _edit_diff(args: dict[str, Any], max_lines: int = 6) -> str:
+    """A tiny -old/+new diff for an apply_diff edit, for the compact view."""
+    old = str(args.get("old", ""))
+    new = str(args.get("new", ""))
+    if not old and not new:
+        return ""
+    lines = [f"-{ln}" for ln in old.splitlines()[:max_lines]]
+    lines += [f"+{ln}" for ln in new.splitlines()[:max_lines]]
+    return "\n".join(lines)
+
+
+# Tools whose (successful) output is worth showing as a short collapsed tail.
+_SHOW_OUTPUT = {
+    "run_shell", "start_background", "check_background", "wait_background",
+    "kill_background", "list_background",
+}
 
 
 def _parse_calls(text: str) -> list[tuple[str, str]]:
@@ -174,9 +337,13 @@ def _attach_images(feedback: str, session: Session):
     return content
 
 
-def _narration(text: str) -> str:
+def _narration(text: str, *, limit: int = 400) -> str:
     """The model's prose with tool/done tags stripped — shown so the user can
-    follow the agent's reasoning, like Claude Code's running narration."""
+    follow the agent's reasoning, like Claude Code's running narration.
+
+    `limit` caps the length: short for a lead-in before tool calls, large for an
+    answer-only step (a reply to a question) so the full answer isn't clipped.
+    """
     stripped = _TOOL_CALL_RE.sub("", text)
     stripped = _DONE_RE.sub("", stripped)
     # Drop structural tag markers (keep their inner text) so wrapped reasoning
@@ -184,7 +351,8 @@ def _narration(text: str) -> str:
     stripped = _NARRATION_TAG_RE.sub("", stripped)
     # Rich markup uses [tag] syntax; drop brackets so prose can't mangle it.
     stripped = stripped.replace("[", "").replace("]", "")
-    return " ".join(stripped.split())[:400]
+    collapsed = " ".join(stripped.split())
+    return collapsed if len(collapsed) <= limit else collapsed[: limit - 1].rstrip() + "…"
 
 
 def execute(
@@ -199,6 +367,7 @@ def execute(
     max_steps: int = _DEFAULT_MAX_STEPS,
     allow: set[str] | None = None,
     extra_system: str = "",
+    policy: PermissionPolicy | None = None,
 ) -> ExecResult:
     """Drive tools autonomously to accomplish `goal`. Writes directly to disk.
 
@@ -211,7 +380,11 @@ def execute(
     provider = runtime._provider  # raw text-in/text-out completion seam
 
     allow = allow or AUTONOMOUS_ALLOW
-    system = _system_prompt(ctx)
+    policy = policy or PermissionPolicy()
+    from . import _tools as _t
+
+    yolo = bool(getattr(_t, "_AUTO_APPROVE", False))
+    system = _system_prompt(ctx, memory=_conversation_memory(session))
     if extra_system.strip():
         system += "\n\n" + extra_system.strip()
     user = f"GOAL:\n{goal.strip()}\n"
@@ -222,6 +395,8 @@ def execute(
 
     result = ExecResult()
     touched: list[str] = []
+    actions_log: list[str] = []  # human-readable recap of what we did, for memory
+    latest_todos: list[dict] = []  # the agent's running checklist
     nudges = 0  # consecutive no-action steps we've prodded the model through
 
     for step in range(1, max_steps + 1):
@@ -235,9 +410,12 @@ def execute(
                 break
 
         try:
-            resp = provider.complete(
-                system=system, messages=messages, max_tokens=session.max_tokens
-            )
+            # Live "Thinking…" spinner (the rotating |/-\ bar) while the model
+            # works, so a step never looks frozen during the model call.
+            with console.status("[brand]Thinking…[/brand]", spinner="line"):
+                resp = provider.complete(
+                    system=system, messages=messages, max_tokens=session.max_tokens
+                )
         except Exception as e:  # noqa: BLE001 - one bad call shouldn't crash the worker
             console.print(f"[err]autonomous step failed: {type(e).__name__}: {e}[/err]")
             result.stopped_reason = "error"
@@ -249,12 +427,14 @@ def execute(
             turn.usage = turn.usage + usage
             turn.cost_usd += estimate_cost_usd(session.provider, session.model, usage)
 
-        narration = _narration(text)
-        if narration:
-            console.print(f"[agent]{narration}[/agent]")
-
         calls = _parse_calls(text)
         done = _DONE_RE.search(text)
+
+        # Answer-only step (no tool calls) → it's a reply/summary to the user, so
+        # show it in full. A step that also calls tools → just a short lead-in.
+        narration = _narration(text, limit=4000 if not calls else 320)
+        if narration:
+            console.print(f"[agent]{narration}[/agent]")
 
         if not calls:
             if done:
@@ -282,12 +462,54 @@ def execute(
         # We took at least one action this step — reset the stall counter.
         nudges = 0
 
-        # Run each requested tool, render it, and collect results to feed back.
+        # Run each requested tool, render it compactly, collect results to feed back.
         result_blocks: list[str] = []
         for name, raw_args in calls:
-            ok, body = _run_one(name, raw_args, allow)
             args = _parse_args(raw_args)
-            _ui.render_tool_run(console, name, args, body, ok)
+
+            # ask_user is interactive — handled here (not via the headless
+            # registry) so it can prompt the real user and feed the choice back.
+            if name == "ask_user":
+                body = _ui.ask_user_questions(console, args)
+                actions_log.append("Asked the user a question")
+                result_blocks.append(f'<tool_result name="ask_user">{body}</tool_result>')
+                continue
+
+            # update_todos maintains the agent's visible checklist.
+            if name == "update_todos":
+                latest_todos = _coerce_todos(args)
+                _ui.render_todos(console, latest_todos)
+                result_blocks.append('<tool_result name="update_todos">todo list updated</tool_result>')
+                continue
+
+            # Permission policy: allow / ask (confirm) / deny. Reads are free;
+            # shell commands are screened against the dangerous-command list.
+            decision, reason = policy.decide(name, args, yolo=yolo)
+            if decision == DENY or (
+                decision == ASK
+                and not _ui.confirm_action(console, _verb_for(name, False), _target_for(name, args), reason)
+            ):
+                _ui.render_action(console, verb="Blocked", target=_target_for(name, args), ok=False, output=reason)
+                actions_log.append(f"Blocked {name} ({reason})".strip())
+                result_blocks.append(
+                    f'<tool_result name="{name}" error="true">blocked by permission policy: '
+                    f"{reason}. Do not retry the same command; try another approach or ask the user."
+                    "</tool_result>"
+                )
+                continue
+
+            existed = name == "write_file" and (Path(session.cwd) / str(args.get("path", ""))).exists()
+            ok, body = _run_one(name, raw_args, allow)
+
+            verb = _verb_for(name, existed)
+            target = _target_for(name, args)
+            diff = _edit_diff(args) if (name == "apply_diff" and ok) else ""
+            show_output = (not ok) or name in _SHOW_OUTPUT or name.startswith(("browser_", "desktop_"))
+            _ui.render_action(
+                console, verb=verb, target=target, ok=ok, diff=diff,
+                output=body if show_output else "",
+            )
+            actions_log.append(f"{verb} {target}".strip() + ("" if ok else " (failed)"))
             if ok and name in _MUTATING:
                 path = args.get("path")
                 if path and path not in touched:
@@ -315,6 +537,8 @@ def execute(
         )
 
     result.files_touched = touched
+    result.actions = actions_log
+    result.todos = latest_todos
     result.steps = step
     if result.summary and result.stopped_reason == "done":
         console.print(f"[ok]✓ {result.summary}[/ok]")

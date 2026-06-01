@@ -72,7 +72,10 @@ def show_banner(
     table.add_row("model", f"{session.provider}/[brand]{session.model}[/brand]")
     if session.escalate_model:
         table.add_row("escalate", f"{session.provider}/[brand]{session.escalate_model}[/brand]")
-    table.add_row("budget", f"$0.000 / [brand]${session.budget_usd:.2f}[/brand]")
+    if session.budget_usd and session.budget_usd > 0:
+        table.add_row("budget", f"$0.000 / [brand]${session.budget_usd:.2f}[/brand]")
+    else:
+        table.add_row("cost", "[brand]$0.000[/brand] [hint](no cap — /budget to set one)[/hint]")
     table.add_row("skills", f"{skill_count} bundled, picker mode [brand]{session.skills_mode}[/brand]")
     _effort_blurb = {
         "auto": "auto — triage sizes each task",
@@ -187,38 +190,140 @@ def render_diff(console: Console, diff_text: str) -> None:
 
 
 def render_skills_picked(console: Console, picks: list[str], reason: str = "") -> None:
-    """One-line summary of which skills the picker loaded."""
+    """One compact, dim line naming the skills the picker loaded. The verbose
+    per-skill 'why' is intentionally omitted — it was noise every turn. (`reason`
+    is kept for signature compatibility.)"""
     if not picks:
-        console.print("[meta]no skills loaded for this turn[/meta]")
         return
     skill_chips = " ".join(f"[skill]{p}[/skill]" for p in picks)
-    console.print(f"[meta]skills:[/meta] {skill_chips}")
-    if reason:
-        console.print(f"[hint]why: {reason}[/hint]")
+    console.print(f"[meta]skills[/meta] {skill_chips}")
 
 
-def render_tool_run(console: Console, tool: str, args: dict, result: str, ok: bool) -> None:
-    """A small block for one tool invocation (read_file, grep, …)."""
-    arg_repr = ", ".join(f"{k}={v!r}" for k, v in args.items())
-    head = f"[brand]→[/brand] [key]{tool}[/key]([meta]{arg_repr}[/meta])"
-    status = "[ok]✓[/ok]" if ok else "[err]✗[/err]"
-    snippet = result if len(result) < 600 else result[:600] + "\n... (truncated)"
-    console.print(f"{head} {status}")
-    if snippet.strip():
-        console.print(Panel(snippet, border_style="meta", padding=(0, 1)))
+def _ellipsize(text: str, limit: int) -> str:
+    """One-line, collapsed-to-`limit` version of `text` (… if cut)."""
+    one = " ".join((text or "").split())
+    return one if len(one) <= limit else one[: limit - 1].rstrip() + "…"
+
+
+# Secret kinds we strip from anything rendered to the terminal (and stored in
+# memory) — keys/tokens/private keys, but NOT emails/cards (too noisy here).
+_SECRET_KINDS = [
+    "aws_access_key", "aws_secret_key", "anthropic_key", "openrouter_key",
+    "openai_key", "github_pat", "github_app_token", "stripe_key", "slack_token",
+    "google_api_key", "bearer_token", "private_key_block",
+]
+
+
+def redact_secrets(text: str) -> str:
+    """Strip API keys / tokens / private keys from `text` (best-effort)."""
+    if not text:
+        return text
+    try:
+        from ..redact import redact_text
+
+        return redact_text(text, kinds=_SECRET_KINDS)[0]
+    except Exception:  # noqa: BLE001 - redaction must never break rendering
+        return text
+
+
+def _short_tail(text: str, *, max_lines: int = 8, max_chars: int = 600) -> str:
+    """A short slice of the END of command output for the collapsed view — the
+    exit status / pass-fail summary usually lives at the tail, not the head."""
+    lines = [ln for ln in (text or "").splitlines() if ln.strip()]
+    if not lines:
+        return ""
+    clipped = lines[-max_lines:]
+    out = "\n".join(clipped)
+    if len(out) > max_chars:
+        out = "…" + out[-max_chars:]
+    if len(lines) > max_lines:
+        out = "… " + out
+    return out
+
+
+def render_action(
+    console: Console,
+    *,
+    verb: str,
+    target: str = "",
+    ok: bool = True,
+    detail: str = "",
+    diff: str = "",
+    output: str = "",
+) -> None:
+    """One compact, faded line per agent action — Claude-Code style.
+
+    e.g. ``✓ Created  index.html`` or ``✓ Ran  npm test``. A long target is
+    ellipsized; `diff` renders a small colored diff (for edits); `output`
+    renders a short dim tail (for commands); failures show the error inline.
+    """
+    mark = "[ok]✓[/ok]" if ok else "[err]✗[/err]"
+    tgt = _ellipsize(redact_secrets(target), 72)
+    line = f"{mark} [meta]{verb}[/meta]"
+    if tgt:
+        line += f"  [hint]{tgt}[/hint]"
+    if detail:
+        line += f" [hint]{detail}[/hint]"
+    console.print(line)
+    if diff.strip():
+        for ln in redact_secrets(diff).splitlines():
+            if ln.startswith("+"):
+                console.print(f"  [diff.add]{ln}[/diff.add]")
+            elif ln.startswith("-"):
+                console.print(f"  [diff.remove]{ln}[/diff.remove]")
+            else:
+                console.print(f"  [hint]{ln}[/hint]")
+    tail = _short_tail(redact_secrets(output))
+    if tail:
+        style = "err" if not ok else "hint"
+        for ln in tail.splitlines():
+            console.print(f"  [{style}]{_ellipsize(ln, 100)}[/{style}]")
+
+
+def render_change_summary(
+    console: Console, created: list[str], edited: list[str], deleted: list[str]
+) -> None:
+    """A one/two-line collapsed summary of a turn's on-disk changes, instead of
+    dumping the full diff. `/diff` shows the detail."""
+    if not (created or edited or deleted):
+        return
+    parts: list[str] = []
+    if created:
+        parts.append(f"[diff.add]{len(created)} created[/diff.add]")
+    if edited:
+        parts.append(f"[diff.hunk]{len(edited)} edited[/diff.hunk]")
+    if deleted:
+        parts.append(f"[diff.remove]{len(deleted)} deleted[/diff.remove]")
+    names = ", ".join((created + edited + deleted)[:8])
+    extra = len(created) + len(edited) + len(deleted) - 8
+    if extra > 0:
+        names += f", +{extra} more"
+    console.print(
+        f"[meta]changes:[/meta] " + " · ".join(parts)
+        + f"  [hint]{names}[/hint]  [hint]· /diff to view[/hint]"
+    )
 
 
 def render_usage_line(
-    console: Console, *, label: str, usage_total: int, cost_usd: float, budget_usd: float
+    console: Console, *, label: str, usage_total: int, cost_usd: float,
+    budget_usd: float, cached: int = 0,
 ) -> None:
-    """One-line summary at the end of a turn."""
-    pct = min(100.0, (cost_usd / budget_usd * 100.0) if budget_usd > 0 else 0.0)
-    style = "cost.under" if pct < 60 else ("cost.warn" if pct < 90 else "cost.over")
-    console.print(
-        f"[meta]{label}[/meta] [meta]{usage_total:,} tokens · "
-        f"[/meta][{style}]${cost_usd:.4f}[/{style}]"
-        f"[meta] of ${budget_usd:.2f}[/meta]"
-    )
+    """One-line usage summary at the end of a turn: tokens (+ cache hits) + cost.
+    The ' / budget' suffix only appears when a cap is set (otherwise we meter)."""
+    cached_str = f" ({cached:,} cached)" if cached and cached > 0 else ""
+    if budget_usd and budget_usd > 0:
+        pct = min(100.0, cost_usd / budget_usd * 100.0)
+        style = "cost.under" if pct < 60 else ("cost.warn" if pct < 90 else "cost.over")
+        console.print(
+            f"[meta]{label}[/meta] [meta]{usage_total:,} tokens{cached_str} · "
+            f"[/meta][{style}]${cost_usd:.4f}[/{style}]"
+            f"[meta] of ${budget_usd:.2f}[/meta]"
+        )
+    else:
+        console.print(
+            f"[meta]{label}[/meta] [meta]{usage_total:,} tokens{cached_str} · "
+            f"[/meta][cost.under]${cost_usd:.4f}[/cost.under]"
+        )
 
 
 def render_footer(console: Console, session: Session) -> None:
@@ -229,12 +334,26 @@ def render_footer(console: Console, session: Session) -> None:
         ("model ", "meta"),
         (f"{session.provider}/{session.model}", "brand"),
         ("  ·  ", "meta"),
-        ("budget ", "meta"),
-        (f"${session.total_cost_usd:.4f}", style),
-        (f" / ${session.budget_usd:.2f}", "meta"),
+    ]
+    if session.budget_usd and session.budget_usd > 0:
+        pieces += [
+            ("cost ", "meta"),
+            (f"${session.total_cost_usd:.4f}", style),
+            (f" / ${session.budget_usd:.2f}", "meta"),
+        ]
+    else:
+        pieces += [
+            ("cost ", "meta"),
+            (f"${session.total_cost_usd:.4f}", "cost.under"),
+        ]
+    pieces += [
         ("  ·  ", "meta"),
         ("tokens ", "meta"),
         (f"{session.total_usage.total_tokens:,}", "brand"),
+    ]
+    if session.total_usage.cached_tokens > 0:
+        pieces += [(f" ({session.total_usage.cached_tokens:,} cached)", "meta")]
+    pieces += [
         ("  ·  ", "meta"),
         ("turns ", "meta"),
         (f"{len(session.history)}", "brand"),
@@ -323,3 +442,133 @@ def prompt_approve_apply(console: Console, *, kind: str = "code") -> str:
 
 def prompt_text(console: Console, prompt: str, *, default: str = "") -> str:
     return Prompt.ask(prompt, default=default, console=console).strip()
+
+
+# ---------- ask_user (interactive multiple-choice, Claude-Code style) ----------
+
+def _normalize_questions(spec: dict) -> list[dict]:
+    """Coerce the ask_user tool args into a list of question dicts. Accepts a
+    `questions` array or a single `question`/`options` pair."""
+    if not isinstance(spec, dict):
+        return []
+    raw = spec.get("questions")
+    if isinstance(raw, list):
+        return [q for q in raw if isinstance(q, dict) and str(q.get("question", "")).strip()]
+    if str(spec.get("question", "")).strip():
+        return [spec]
+    return []
+
+
+def _resolve_choice(raw: str, options: list[str], other_n: int, read, console: Console) -> str:
+    """Map the user's raw input to an answer: a number selects an option, the
+    'Other' number (or any free text) becomes a typed answer."""
+    raw = (raw or "").strip()
+    if not raw:
+        return options[0] if options else "(no answer)"
+    if raw.isdigit():
+        n = int(raw)
+        if 1 <= n <= len(options):
+            return options[n - 1]
+        if n == other_n:
+            try:
+                custom = str(read("[brand]your answer:[/brand] ")).strip()
+            except (EOFError, KeyboardInterrupt):
+                custom = ""
+            return custom or "(no answer)"
+        return raw  # out-of-range number → treat literally
+    return raw  # non-numeric → a free-text answer
+
+
+def ask_user_questions(console: Console, spec: dict, *, input_fn=None) -> str:
+    """Ask the user one or more multiple-choice questions mid-task and return the
+    answers as text to feed back to the model (Claude-Code's AskUserQuestion).
+
+    Each question shows up to 4 options plus an auto-added "Other (type your
+    own)". The user answers by number, or by typing their own text. In a
+    non-interactive context (no TTY and no injected `input_fn`) we never block —
+    we tell the model to proceed with sensible defaults.
+    """
+    import sys
+
+    questions = _normalize_questions(spec)
+    if not questions:
+        return "(ask_user was called with no questions; continue using your best judgment.)"
+
+    interactive = input_fn is not None or (
+        getattr(sys.stdin, "isatty", lambda: False)()
+        and getattr(sys.stdout, "isatty", lambda: False)()
+    )
+    if not interactive:
+        return (
+            "(No interactive user is available to answer right now. Proceed with "
+            "sensible defaults and note any assumptions you made.)"
+        )
+
+    read = input_fn or (lambda prompt: console.input(prompt))
+    answers: list[str] = []
+    for q in questions[:6]:
+        text = str(q.get("question", "")).strip()
+        header = str(q.get("header", "")).strip()
+        options = [str(o) for o in (q.get("options") or [])][:4]
+        label = f"[brand]?[/brand] [b]{text}[/b]"
+        if header:
+            label += f"  [hint]({header})[/hint]"
+        console.print(label)
+        for i, opt in enumerate(options, start=1):
+            console.print(f"  [key]{i}[/key]. {opt}")
+        other_n = len(options) + 1
+        console.print(f"  [key]{other_n}[/key]. [hint]Other (type your own)[/hint]")
+        try:
+            raw = str(read(f"[brand]choose 1-{other_n} (or type an answer):[/brand] "))
+        except (EOFError, KeyboardInterrupt):
+            raw = ""
+        answer = _resolve_choice(raw, options, other_n, read, console)
+        answers.append(f"Q: {text}\nA: {answer}")
+        console.print(f"  [ok]→ {answer}[/ok]")
+    return "\n\n".join(answers)
+
+
+def confirm_action(console: Console, verb: str, target: str, reason: str = "", *, input_fn=None) -> bool:
+    """Ask the user to approve a guarded action (permission policy 'ask').
+    Returns True to allow. Non-interactive (no TTY, no input_fn) → False (deny)."""
+    import sys
+
+    interactive = input_fn is not None or (
+        getattr(sys.stdin, "isatty", lambda: False)()
+        and getattr(sys.stdout, "isatty", lambda: False)()
+    )
+    tgt = _ellipsize(redact_secrets(target), 80)
+    console.print(
+        f"[warn]⚠ permission:[/warn] [meta]{verb}[/meta] [hint]{tgt}[/hint]"
+        + (f"  [hint]({reason})[/hint]" if reason else "")
+    )
+    if not interactive:
+        console.print("[hint]  no interactive user — denying (run with /yolo to auto-allow).[/hint]")
+        return False
+    read = input_fn or (lambda prompt: console.input(prompt))
+    try:
+        raw = str(read("[brand]  allow this? (y/N):[/brand] ")).strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        return False
+    return raw in {"y", "yes"}
+
+
+# ---------- live todo list (the agent's running checklist) ----------
+
+_TODO_GLYPH = {"done": "[ok]☑[/ok]", "doing": "[brand]▶[/brand]", "todo": "[hint]☐[/hint]"}
+
+
+def render_todos(console: Console, todos: list[dict]) -> None:
+    """Render the agent's task checklist — one line per item with a state glyph,
+    Claude-Code style, so a long autonomous task stays legible."""
+    if not todos:
+        return
+    console.print("[meta]todo[/meta]")
+    for item in todos:
+        text = str(item.get("text", "")).strip()
+        if not text:
+            continue
+        status = str(item.get("status", "todo")).lower()
+        glyph = _TODO_GLYPH.get(status, _TODO_GLYPH["todo"])
+        style = "meta" if status == "done" else ("brand" if status == "doing" else "hint")
+        console.print(f"  {glyph} [{style}]{_ellipsize(text, 84)}[/{style}]")
