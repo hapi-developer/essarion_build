@@ -50,10 +50,15 @@ AUTONOMOUS_ALLOW = {
 # Of those, the ones that change files on disk (for files_touched accounting).
 _MUTATING = {"write_file", "apply_diff", "delete_file"}
 
-# Default safety cap on the number of model<->tool rounds.
+# Default safety cap on the number of model<->tool rounds. Generous so a full
+# multi-file task (scaffold → fill in → run → fix) can finish in one turn.
 _DEFAULT_MAX_STEPS = 40
 # Truncate a single tool result before feeding it back, to control token spend.
 _RESULT_FEEDBACK_CAP = 4000
+# How many times we'll nudge the model to keep going when a step produced no
+# tool call and no <done>. A transient prose-only / empty step shouldn't end a
+# real task — but we cap it so a stuck model can't loop forever.
+_MAX_CONSECUTIVE_NUDGES = 2
 
 _TOOL_CALL_RE = re.compile(
     r"<tool_call\s+name\s*=\s*['\"]([^'\"]+)['\"]\s*>(.*?)</tool_call>",
@@ -64,6 +69,14 @@ _RESULT_RE = re.compile(
     re.DOTALL,
 )
 _DONE_RE = re.compile(r"<done>(.*?)</done>", re.DOTALL)
+# Structural / reasoning tags some models wrap prose in. We strip the tag
+# markers from the running narration (keeping the inner text) so the agent's
+# output reads like Claude Code's clean narration, not raw XML.
+_NARRATION_TAG_RE = re.compile(
+    r"</?(?:plan|tradeoffs|verdict|critique|code|complexity|reason|reasoning|"
+    r"defense|selfcheck|thinking|scratchpad|tool_result|step|action)\b[^>]*>",
+    re.IGNORECASE,
+)
 
 
 class ExecResult(BaseModel):
@@ -80,11 +93,11 @@ def _system_prompt(ctx: Context) -> str:
     manifest = sdk_tools.tool_manifest()
     context_block = ctx.to_prompt_block()
     return (
-        "You are an autonomous coding agent working directly inside a sandboxed "
-        "project workspace. Accomplish the user's GOAL end to end by taking "
-        "actions with tools — you can create, edit and delete files and run shell "
-        "commands, and every action applies immediately to the real workspace on "
-        "disk.\n\n"
+        "You are an autonomous coding agent (like Claude Code or Codex) working "
+        "directly inside a sandboxed project workspace. Accomplish the user's "
+        "GOAL end to end by taking actions with tools — you can create, edit and "
+        "delete files and run shell commands, and every action applies "
+        "immediately to the real workspace on disk.\n\n"
         "How to act:\n"
         "- Emit one or more tool calls, each on the form:\n"
         "  <tool_call name=\"TOOL\">{\"arg\": \"value\"}</tool_call>\n"
@@ -93,9 +106,20 @@ def _system_prompt(ctx: Context) -> str:
         "focused changes (write_file for new files, apply_diff for edits, "
         "delete_file to remove), and verify with run_shell (run the tests/build "
         "and fix failures, then re-run) whenever you can.\n"
+        "- Build the COMPLETE solution, not a stub. A real task is many files: "
+        "create every source file, config, entry point, and test the goal needs. "
+        "Do NOT stop after a single file — keep going until the whole thing is "
+        "in place and works.\n"
+        "- After writing code, actually run it (run_shell / start_background) to "
+        "prove it works; if a command fails, read the error, fix the files, and "
+        "re-run. For long-running processes (dev servers, installs) use "
+        "start_background and poll with check_background.\n"
         "- Work autonomously and keep going across many steps. Do NOT ask the "
-        "user questions or wait for approval — just do the work.\n"
-        "- When the ENTIRE goal is complete and verified, emit exactly:\n"
+        "user questions, narrate a plan and stop, or wait for approval — just do "
+        "the work. Every step should contain at least one tool call until you "
+        "are genuinely finished.\n"
+        "- When (and only when) the ENTIRE goal is complete and verified, emit "
+        "exactly:\n"
         "  <done>a one-line summary of what you built</done>\n\n"
         f"{manifest}\n\n"
         f"{context_block}"
@@ -155,7 +179,10 @@ def _narration(text: str) -> str:
     follow the agent's reasoning, like Claude Code's running narration."""
     stripped = _TOOL_CALL_RE.sub("", text)
     stripped = _DONE_RE.sub("", stripped)
-    # Markup uses [tag] syntax; drop brackets so prose can't mangle it.
+    # Drop structural tag markers (keep their inner text) so wrapped reasoning
+    # reads as plain prose rather than raw XML.
+    stripped = _NARRATION_TAG_RE.sub("", stripped)
+    # Rich markup uses [tag] syntax; drop brackets so prose can't mangle it.
     stripped = stripped.replace("[", "").replace("]", "")
     return " ".join(stripped.split())[:400]
 
@@ -195,6 +222,7 @@ def execute(
 
     result = ExecResult()
     touched: list[str] = []
+    nudges = 0  # consecutive no-action steps we've prodded the model through
 
     for step in range(1, max_steps + 1):
         # Budget guard — stop before paying for a step we can't afford.
@@ -229,10 +257,30 @@ def execute(
         done = _DONE_RE.search(text)
 
         if not calls:
-            # No actions this step — either we're finished or the model stalled.
-            result.summary = done.group(1).strip() if done else narration
-            result.stopped_reason = "done" if done else "no_action"
+            if done:
+                # Clean finish — the model signalled the goal is complete.
+                result.summary = done.group(1).strip()
+                result.stopped_reason = "done"
+                break
+            # No tool call and no <done>. Don't give up on the task because of
+            # one prose-only step — nudge the model to either act or finish, up
+            # to a small cap, then stop so a stuck model can't loop forever.
+            if nudges < _MAX_CONSECUTIVE_NUDGES:
+                nudges += 1
+                messages.append({"role": "assistant", "content": text})
+                messages.append({"role": "user", "content": (
+                    "You didn't take an action or finish. If the goal is fully "
+                    "complete and verified, emit <done>summary</done> now. "
+                    "Otherwise keep going: emit the next <tool_call> to make "
+                    "progress (create/edit files, run commands)."
+                )})
+                continue
+            result.summary = narration
+            result.stopped_reason = "no_action"
             break
+
+        # We took at least one action this step — reset the stall counter.
+        nudges = 0
 
         # Run each requested tool, render it, and collect results to feed back.
         result_blocks: list[str] = []

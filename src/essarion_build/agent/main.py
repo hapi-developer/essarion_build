@@ -73,8 +73,17 @@ def _add_agent_args(parser: argparse.ArgumentParser) -> None:
         "--autonomous",
         "--auto",
         action="store_true",
-        help="autonomous mode: execute approved plans end-to-end on disk "
-        "(write/edit/delete/shell) instead of emitting one code blob to apply",
+        help="autonomous mode (now the DEFAULT): plan internally, then "
+        "write/edit/delete files and run commands on disk in a loop until the "
+        "task is done. This flag is kept for clarity; it's already the default.",
+    )
+    parser.add_argument(
+        "--plan-first",
+        "--no-auto",
+        dest="plan_first",
+        action="store_true",
+        help="opt OUT of autonomous mode: use the classic plan → approve → "
+        "hand-apply-one-change flow instead of the agentic build loop.",
     )
     parser.add_argument(
         "--computer-use",
@@ -168,6 +177,21 @@ def _apply_project_config(
     return data
 
 
+def _resolve_autonomous(args: argparse.Namespace) -> bool:
+    """Decide whether a fresh session starts in autonomous mode.
+
+    Autonomous is the default. Computer/desktop control force it on (they need
+    the act→observe→act loop). `--plan-first` opts out; explicit `--auto` wins
+    over `--plan-first` if a user somehow passes both.
+    """
+    if getattr(args, "autonomous", False) or getattr(args, "computer_use", False) \
+            or getattr(args, "desktop_control", False):
+        return True
+    if getattr(args, "plan_first", False):
+        return False
+    return True  # the default
+
+
 def _initial_session(args: argparse.Namespace, project: Project) -> Session:
     """Build the Session object the REPL will mutate."""
     cfg = current()
@@ -192,7 +216,11 @@ def _initial_session(args: argparse.Namespace, project: Project) -> Session:
             s.max_tokens = args.max_tokens
         if args.budget:
             s.budget_usd = args.budget
-        if getattr(args, "autonomous", False):
+        # Mode override on resume: explicit flags win; otherwise keep whatever
+        # the saved session used.
+        if getattr(args, "plan_first", False):
+            s.autonomous = False
+        elif getattr(args, "autonomous", False):
             s.autonomous = True
         if getattr(args, "computer_use", False):
             s.computer_use = True
@@ -214,9 +242,7 @@ def _initial_session(args: argparse.Namespace, project: Project) -> Session:
         budget_usd=args.budget,
         skills_mode=args.skills,
         effort=args.effort,
-        autonomous=getattr(args, "autonomous", False)
-        or getattr(args, "computer_use", False)
-        or getattr(args, "desktop_control", False),
+        autonomous=_resolve_autonomous(args),
         computer_use=getattr(args, "computer_use", False),
         desktop_control=getattr(args, "desktop_control", False),
     )
@@ -293,13 +319,10 @@ def run_agent(argv: list[str] | None = None) -> int:
     if task:
         # Non-interactive single-task mode — pipes-friendly.
         from ._background import shutdown_manager
-        from ._loop import run_turn, run_turn_autonomous
+        from ._loop import run_task
 
         try:
-            if session.autonomous:
-                run_turn_autonomous(console, session, task)
-            else:
-                run_turn(console, session, task)
+            run_task(console, session, task)
         finally:
             shutdown_manager()
         return 0

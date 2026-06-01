@@ -145,21 +145,18 @@ def test_custom_slash_command_from_essarion_dir(console, session, tmp_path) -> N
 
     captured: dict = {}
 
-    # Patch run_turn so we don't make a model call.
-    import essarion_build.agent._commands as cmds
-    original = cmds.dispatch
-
-    def fake_run_turn(c, s, task):
+    # Custom commands route through run_task (mode-aware dispatch); patch it so
+    # we don't make a model call.
+    def fake_run_task(c, s, task):
         captured["task"] = task
 
     import essarion_build.agent._loop as loop
-    monkey_target = "essarion_build.agent._loop.run_turn"
-    orig_run_turn = loop.run_turn
-    loop.run_turn = fake_run_turn
+    orig_run_task = loop.run_task
+    loop.run_task = fake_run_task
     try:
         dispatch(console, session, "/tldr the auth module")
     finally:
-        loop.run_turn = orig_run_turn
+        loop.run_task = orig_run_task
     assert "Summarize the auth module" in captured["task"]
 
 
