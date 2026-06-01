@@ -205,6 +205,27 @@ def _ellipsize(text: str, limit: int) -> str:
     return one if len(one) <= limit else one[: limit - 1].rstrip() + "…"
 
 
+# Secret kinds we strip from anything rendered to the terminal (and stored in
+# memory) — keys/tokens/private keys, but NOT emails/cards (too noisy here).
+_SECRET_KINDS = [
+    "aws_access_key", "aws_secret_key", "anthropic_key", "openrouter_key",
+    "openai_key", "github_pat", "github_app_token", "stripe_key", "slack_token",
+    "google_api_key", "bearer_token", "private_key_block",
+]
+
+
+def redact_secrets(text: str) -> str:
+    """Strip API keys / tokens / private keys from `text` (best-effort)."""
+    if not text:
+        return text
+    try:
+        from ..redact import redact_text
+
+        return redact_text(text, kinds=_SECRET_KINDS)[0]
+    except Exception:  # noqa: BLE001 - redaction must never break rendering
+        return text
+
+
 def _short_tail(text: str, *, max_lines: int = 8, max_chars: int = 600) -> str:
     """A short slice of the END of command output for the collapsed view — the
     exit status / pass-fail summary usually lives at the tail, not the head."""
@@ -237,7 +258,7 @@ def render_action(
     renders a short dim tail (for commands); failures show the error inline.
     """
     mark = "[ok]✓[/ok]" if ok else "[err]✗[/err]"
-    tgt = _ellipsize(target, 72)
+    tgt = _ellipsize(redact_secrets(target), 72)
     line = f"{mark} [meta]{verb}[/meta]"
     if tgt:
         line += f"  [hint]{tgt}[/hint]"
@@ -245,14 +266,14 @@ def render_action(
         line += f" [hint]{detail}[/hint]"
     console.print(line)
     if diff.strip():
-        for ln in diff.splitlines():
+        for ln in redact_secrets(diff).splitlines():
             if ln.startswith("+"):
                 console.print(f"  [diff.add]{ln}[/diff.add]")
             elif ln.startswith("-"):
                 console.print(f"  [diff.remove]{ln}[/diff.remove]")
             else:
                 console.print(f"  [hint]{ln}[/hint]")
-    tail = _short_tail(output)
+    tail = _short_tail(redact_secrets(output))
     if tail:
         style = "err" if not ok else "hint"
         for ln in tail.splitlines():
@@ -284,21 +305,23 @@ def render_change_summary(
 
 
 def render_usage_line(
-    console: Console, *, label: str, usage_total: int, cost_usd: float, budget_usd: float
+    console: Console, *, label: str, usage_total: int, cost_usd: float,
+    budget_usd: float, cached: int = 0,
 ) -> None:
-    """One-line usage summary at the end of a turn: tokens + cost. The ' / budget'
-    suffix only appears when a cap is set (otherwise we just meter)."""
+    """One-line usage summary at the end of a turn: tokens (+ cache hits) + cost.
+    The ' / budget' suffix only appears when a cap is set (otherwise we meter)."""
+    cached_str = f" ({cached:,} cached)" if cached and cached > 0 else ""
     if budget_usd and budget_usd > 0:
         pct = min(100.0, cost_usd / budget_usd * 100.0)
         style = "cost.under" if pct < 60 else ("cost.warn" if pct < 90 else "cost.over")
         console.print(
-            f"[meta]{label}[/meta] [meta]{usage_total:,} tokens · "
+            f"[meta]{label}[/meta] [meta]{usage_total:,} tokens{cached_str} · "
             f"[/meta][{style}]${cost_usd:.4f}[/{style}]"
             f"[meta] of ${budget_usd:.2f}[/meta]"
         )
     else:
         console.print(
-            f"[meta]{label}[/meta] [meta]{usage_total:,} tokens · "
+            f"[meta]{label}[/meta] [meta]{usage_total:,} tokens{cached_str} · "
             f"[/meta][cost.under]${cost_usd:.4f}[/cost.under]"
         )
 
@@ -327,6 +350,10 @@ def render_footer(console: Console, session: Session) -> None:
         ("  ·  ", "meta"),
         ("tokens ", "meta"),
         (f"{session.total_usage.total_tokens:,}", "brand"),
+    ]
+    if session.total_usage.cached_tokens > 0:
+        pieces += [(f" ({session.total_usage.cached_tokens:,} cached)", "meta")]
+    pieces += [
         ("  ·  ", "meta"),
         ("turns ", "meta"),
         (f"{len(session.history)}", "brand"),
@@ -499,3 +526,49 @@ def ask_user_questions(console: Console, spec: dict, *, input_fn=None) -> str:
         answers.append(f"Q: {text}\nA: {answer}")
         console.print(f"  [ok]→ {answer}[/ok]")
     return "\n\n".join(answers)
+
+
+def confirm_action(console: Console, verb: str, target: str, reason: str = "", *, input_fn=None) -> bool:
+    """Ask the user to approve a guarded action (permission policy 'ask').
+    Returns True to allow. Non-interactive (no TTY, no input_fn) → False (deny)."""
+    import sys
+
+    interactive = input_fn is not None or (
+        getattr(sys.stdin, "isatty", lambda: False)()
+        and getattr(sys.stdout, "isatty", lambda: False)()
+    )
+    tgt = _ellipsize(redact_secrets(target), 80)
+    console.print(
+        f"[warn]⚠ permission:[/warn] [meta]{verb}[/meta] [hint]{tgt}[/hint]"
+        + (f"  [hint]({reason})[/hint]" if reason else "")
+    )
+    if not interactive:
+        console.print("[hint]  no interactive user — denying (run with /yolo to auto-allow).[/hint]")
+        return False
+    read = input_fn or (lambda prompt: console.input(prompt))
+    try:
+        raw = str(read("[brand]  allow this? (y/N):[/brand] ")).strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        return False
+    return raw in {"y", "yes"}
+
+
+# ---------- live todo list (the agent's running checklist) ----------
+
+_TODO_GLYPH = {"done": "[ok]☑[/ok]", "doing": "[brand]▶[/brand]", "todo": "[hint]☐[/hint]"}
+
+
+def render_todos(console: Console, todos: list[dict]) -> None:
+    """Render the agent's task checklist — one line per item with a state glyph,
+    Claude-Code style, so a long autonomous task stays legible."""
+    if not todos:
+        return
+    console.print("[meta]todo[/meta]")
+    for item in todos:
+        text = str(item.get("text", "")).strip()
+        if not text:
+            continue
+        status = str(item.get("status", "todo")).lower()
+        glyph = _TODO_GLYPH.get(status, _TODO_GLYPH["todo"])
+        style = "meta" if status == "done" else ("brand" if status == "doing" else "hint")
+        console.print(f"  {glyph} [{style}]{_ellipsize(text, 84)}[/{style}]")

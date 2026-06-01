@@ -774,7 +774,7 @@ def run_turn(console, session: Session, task: str) -> None:
             label="turn usage",
             usage_total=turn.usage.total_tokens,
             cost_usd=turn.cost_usd,
-            budget_usd=session.budget_usd,
+            budget_usd=session.budget_usd, cached=turn.usage.cached_tokens,
         )
         _ui.render_footer(console, session)
         return
@@ -804,7 +804,7 @@ def run_turn(console, session: Session, task: str) -> None:
             label="turn usage",
             usage_total=turn.usage.total_tokens,
             cost_usd=turn.cost_usd,
-            budget_usd=session.budget_usd,
+            budget_usd=session.budget_usd, cached=turn.usage.cached_tokens,
         )
         _ui.render_footer(console, session)
         return
@@ -850,7 +850,7 @@ def run_turn(console, session: Session, task: str) -> None:
         label="turn usage",
         usage_total=turn.usage.total_tokens,
         cost_usd=turn.cost_usd,
-        budget_usd=session.budget_usd,
+        budget_usd=session.budget_usd, cached=turn.usage.cached_tokens,
     )
     if session.total_cost_usd > session.budget_usd:
         console.print(
@@ -917,7 +917,7 @@ def run_turn_autonomous(console, session: Session, task: str):
         session.record(turn)
         _ui.render_usage_line(
             console, label="turn usage", usage_total=turn.usage.total_tokens,
-            cost_usd=turn.cost_usd, budget_usd=session.budget_usd,
+            cost_usd=turn.cost_usd, budget_usd=session.budget_usd, cached=turn.usage.cached_tokens,
         )
         _ui.render_footer(console, session)
         return
@@ -981,11 +981,22 @@ def run_turn_autonomous(console, session: Session, task: str):
         except Exception as e:  # noqa: BLE001
             console.print(f"[warn]desktop control requested but could not start:[/warn] {e}")
 
+    # Permission policy from the project's .essarion/config.toml [permissions].
+    from ._permissions import PermissionPolicy
+
+    try:
+        from ._project import find_project_root, load_project_config
+
+        _perm_cfg = load_project_config(find_project_root(session.cwd)).get("permissions") or {}
+    except Exception:  # noqa: BLE001 - never let config break a turn
+        _perm_cfg = {}
+    policy = PermissionPolicy.from_config(_perm_cfg)
+
     try:
         result = _agent_exec.execute(
             console, session, task, ctx,
             make_runtime=_make_runtime, turn=turn, plan=turn.plan,
-            allow=allow, extra_system="\n\n".join(extra_parts),
+            allow=allow, extra_system="\n\n".join(extra_parts), policy=policy,
         )
     finally:
         if backend is not None:
@@ -1000,6 +1011,8 @@ def run_turn_autonomous(console, session: Session, task: str):
         turn.summary = result.summary
     if result.actions:
         turn.actions = result.actions
+    if result.todos:
+        turn.todos = result.todos
 
     # 4. Compact, collapsed summary of this turn's on-disk changes (created /
     #    edited / deleted counts + names). The full diff is one `/diff` away.
@@ -1014,7 +1027,7 @@ def run_turn_autonomous(console, session: Session, task: str):
     session.record(turn)
     _ui.render_usage_line(
         console, label="turn usage", usage_total=turn.usage.total_tokens,
-        cost_usd=turn.cost_usd, budget_usd=session.budget_usd,
+        cost_usd=turn.cost_usd, budget_usd=session.budget_usd, cached=turn.usage.cached_tokens,
     )
     if session.budget_usd and session.total_cost_usd > session.budget_usd:
         console.print(

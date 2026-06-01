@@ -117,11 +117,32 @@ class StreamingProvider(Provider, Protocol):
         ...
 
 
+def _mark_last_cacheable(messages: list[dict[str, Any]]) -> None:
+    """Add an ephemeral cache breakpoint to the final message so Anthropic caches
+    the *growing conversation prefix* across an agent's multi-step turn — each
+    step reuses the prior steps' cached tokens instead of re-billing them."""
+    if not messages:
+        return
+    try:
+        last = messages[-1]
+        content = last.get("content")
+        if isinstance(content, str):
+            last["content"] = [
+                {"type": "text", "text": content, "cache_control": {"type": "ephemeral"}}
+            ]
+        elif isinstance(content, list) and content:
+            blocks = [dict(b) if isinstance(b, dict) else {"type": "text", "text": str(b)} for b in content]
+            blocks[-1] = {**blocks[-1], "cache_control": {"type": "ephemeral"}}
+            last["content"] = blocks
+    except Exception:  # noqa: BLE001 - caching is an optimization, never fatal
+        pass
+
+
 class _AnthropicProvider:
     """Talks to the Anthropic Claude API.
 
-    Uses prompt caching on the system block so the 3 calls in a reasoning loop
-    share a cached prefix.
+    Uses prompt caching on the system block AND the growing message prefix, so a
+    reasoning loop or a many-step agent run share a cached prefix across calls.
     """
 
     def __init__(self, *, api_key: str | None = None, model: str) -> None:
@@ -152,6 +173,8 @@ class _AnthropicProvider:
         )
         from ._content import render_anthropic
 
+        rendered = [{**m, "content": render_anthropic(m["content"])} for m in messages]
+        _mark_last_cacheable(rendered)
         try:
             response = self._client.messages.create(
                 model=self.model,
@@ -163,7 +186,7 @@ class _AnthropicProvider:
                         "cache_control": {"type": "ephemeral"},
                     }
                 ],
-                messages=[{**m, "content": render_anthropic(m["content"])} for m in messages],
+                messages=rendered,
             )
         except AuthenticationError as e:
             raise ProviderAuthError(

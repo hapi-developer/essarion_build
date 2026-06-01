@@ -282,6 +282,60 @@ def test_conversation_memory_includes_actions_and_server_url(session, monkeypatc
     assert "still running" in mem
 
 
+def test_execute_blocks_risky_shell_when_noninteractive(monkeypatch, console, session, tmp_path) -> None:
+    """A risky command (rm -rf) is 'ask' → with no interactive user it's denied,
+    so it never runs. The agent gets a 'blocked' result and moves on."""
+    monkeypatch.setattr("essarion_build.agent._tools._AUTO_APPROVE", False)
+    (tmp_path / "keep.txt").write_text("important\n")
+    stub = StubProvider(responses=[
+        _call("run_shell", cmd="rm -rf keep.txt"),
+        "<done>tried to clean up</done>",
+    ], auto_respond=False)
+    _agent_exec.execute(
+        console, session, "clean up", Context(),
+        make_runtime=lambda p, m: LiteRuntime(stub),
+    )
+    assert (tmp_path / "keep.txt").is_file()  # NOT deleted — the command was blocked
+    assert "Blocked" in console.file.getvalue()
+
+
+def test_execute_tracks_and_renders_todos(console, session) -> None:
+    """update_todos drives the visible checklist and is stored on the result."""
+    stub = StubProvider(responses=[
+        _call("update_todos", todos=[
+            {"text": "Scaffold the app", "status": "doing"},
+            {"text": "Add tests", "status": "todo"},
+        ]),
+        "<done>set up the plan</done>",
+    ], auto_respond=False)
+    result = _agent_exec.execute(
+        console, session, "build", Context(),
+        make_runtime=lambda p, m: LiteRuntime(stub),
+    )
+    assert result.todos and result.todos[0]["text"] == "Scaffold the app"
+    assert "Scaffold the app" in console.file.getvalue()
+
+
+def test_render_action_redacts_secrets(console) -> None:
+    """Keys/tokens are stripped from rendered tool output."""
+    key = "sk-or-v1-abcdef0123456789abcdef0123"
+    _ui.render_action(console, verb="Ran", target=f"echo {key}", ok=True, output=f"token={key}")
+    out = console.file.getvalue()
+    assert key not in out
+    assert "REDACTED" in out
+
+
+def test_mark_last_cacheable_adds_breakpoint() -> None:
+    """The Anthropic provider marks the final message for prompt caching."""
+    from essarion_build._providers import _mark_last_cacheable
+
+    msgs = [{"role": "user", "content": "a"}, {"role": "user", "content": "b"}]
+    _mark_last_cacheable(msgs)
+    last = msgs[-1]["content"]
+    assert isinstance(last, list) and last[-1]["cache_control"] == {"type": "ephemeral"}
+    assert msgs[0]["content"] == "a"  # earlier messages untouched
+
+
 def test_execute_gives_up_after_repeated_no_action(console, session) -> None:
     """If the model never acts, the loop nudges a bounded number of times and
     then stops with no_action — it does not spin forever."""

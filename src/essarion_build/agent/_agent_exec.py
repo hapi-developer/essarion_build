@@ -34,6 +34,7 @@ from pydantic import BaseModel, Field
 from .. import Context, Usage
 from .. import tools as sdk_tools
 from ._changes import current_changelog
+from ._permissions import ASK, DENY, PermissionPolicy
 from ._session import Session, TaskTurn, estimate_cost_usd
 from . import _ui
 
@@ -86,9 +87,26 @@ class ExecResult(BaseModel):
     # Human-readable actions taken this run, in order ("Created index.html",
     # "Ran ls -l", "Started Simple HTTP Server"). Stored on the turn for memory.
     actions: list[str] = Field(default_factory=list)
+    # The agent's latest checklist (todo/doing/done), if it kept one.
+    todos: list[dict] = Field(default_factory=list)
     steps: int = 0
     summary: str = ""
     stopped_reason: str = "done"  # done | max_steps | budget | no_action | error
+
+
+def _coerce_todos(args: dict[str, Any]) -> list[dict]:
+    """Normalize update_todos args into [{text, status}] (status: todo/doing/done)."""
+    raw = args.get("todos")
+    out: list[dict] = []
+    if isinstance(raw, list):
+        for it in raw:
+            if isinstance(it, dict) and str(it.get("text", "")).strip():
+                status = str(it.get("status", "todo")).lower()
+                out.append({"text": str(it["text"]).strip(),
+                            "status": status if status in {"todo", "doing", "done"} else "todo"})
+            elif isinstance(it, str) and it.strip():
+                out.append({"text": it.strip(), "status": "todo"})
+    return out
 
 
 def _infer_url(cmd: str) -> str | None:
@@ -143,13 +161,23 @@ def _system_prompt(ctx: Context, memory: str = "") -> str:
         "  Up to 4 options per question (an 'Other' choice is added "
         "automatically); you may ask a few at once. Don't overuse it — only for "
         "decisions that materially change the outcome.\n"
+        "- For any multi-step task, keep a short checklist with update_todos: set "
+        "it up front and flip items to 'doing'/'done' as you progress.\n"
+        "  <tool_call name=\"update_todos\">{\"todos\": [{\"text\": \"Scaffold the app\", "
+        "\"status\": \"doing\"}, {\"text\": \"Add tests\", \"status\": \"todo\"}]}</tool_call>\n"
+        "  status is one of: todo | doing | done.\n"
+        "- Some commands need approval or are blocked by the user's permission "
+        "policy. If a tool result says an action was blocked, adapt (try another "
+        "approach) or ask the user — do NOT just retry the same command.\n"
         "- When the goal is complete (or the question answered), emit exactly:\n"
         "  <done>a one-line summary of what you did</done>"
     )
-    parts = [protocol]
+    # Order matters for prompt caching: the stable prefix (protocol + tool
+    # manifest, identical every turn) comes first so providers can cache it
+    # across turns; the volatile parts (memory, picked skills, notes) come last.
+    parts = [protocol, manifest]
     if memory.strip():
         parts.append(memory.strip())
-    parts.append(manifest)
     parts.append(context_block)
     return "\n\n".join(p for p in parts if p and p.strip())
 
@@ -211,7 +239,9 @@ def _conversation_memory(session: Session) -> str:
         blocks.append("BACKGROUND PROCESSES still running (you started these):\n" + "\n".join(running))
     if finished:
         blocks.append("RECENTLY FINISHED background tasks:\n" + "\n".join(finished[-4:]))
-    return "\n\n".join(blocks)
+    # Redact any secrets (keys/tokens) that leaked into a command or summary
+    # before they ride along in the prompt.
+    return _ui.redact_secrets("\n\n".join(blocks))
 
 
 # Per-tool verb + how to show its result in the compact action line.
@@ -337,6 +367,7 @@ def execute(
     max_steps: int = _DEFAULT_MAX_STEPS,
     allow: set[str] | None = None,
     extra_system: str = "",
+    policy: PermissionPolicy | None = None,
 ) -> ExecResult:
     """Drive tools autonomously to accomplish `goal`. Writes directly to disk.
 
@@ -349,6 +380,10 @@ def execute(
     provider = runtime._provider  # raw text-in/text-out completion seam
 
     allow = allow or AUTONOMOUS_ALLOW
+    policy = policy or PermissionPolicy()
+    from . import _tools as _t
+
+    yolo = bool(getattr(_t, "_AUTO_APPROVE", False))
     system = _system_prompt(ctx, memory=_conversation_memory(session))
     if extra_system.strip():
         system += "\n\n" + extra_system.strip()
@@ -361,6 +396,7 @@ def execute(
     result = ExecResult()
     touched: list[str] = []
     actions_log: list[str] = []  # human-readable recap of what we did, for memory
+    latest_todos: list[dict] = []  # the agent's running checklist
     nudges = 0  # consecutive no-action steps we've prodded the model through
 
     for step in range(1, max_steps + 1):
@@ -439,6 +475,29 @@ def execute(
                 result_blocks.append(f'<tool_result name="ask_user">{body}</tool_result>')
                 continue
 
+            # update_todos maintains the agent's visible checklist.
+            if name == "update_todos":
+                latest_todos = _coerce_todos(args)
+                _ui.render_todos(console, latest_todos)
+                result_blocks.append('<tool_result name="update_todos">todo list updated</tool_result>')
+                continue
+
+            # Permission policy: allow / ask (confirm) / deny. Reads are free;
+            # shell commands are screened against the dangerous-command list.
+            decision, reason = policy.decide(name, args, yolo=yolo)
+            if decision == DENY or (
+                decision == ASK
+                and not _ui.confirm_action(console, _verb_for(name, False), _target_for(name, args), reason)
+            ):
+                _ui.render_action(console, verb="Blocked", target=_target_for(name, args), ok=False, output=reason)
+                actions_log.append(f"Blocked {name} ({reason})".strip())
+                result_blocks.append(
+                    f'<tool_result name="{name}" error="true">blocked by permission policy: '
+                    f"{reason}. Do not retry the same command; try another approach or ask the user."
+                    "</tool_result>"
+                )
+                continue
+
             existed = name == "write_file" and (Path(session.cwd) / str(args.get("path", ""))).exists()
             ok, body = _run_one(name, raw_args, allow)
 
@@ -479,6 +538,7 @@ def execute(
 
     result.files_touched = touched
     result.actions = actions_log
+    result.todos = latest_todos
     result.steps = step
     if result.summary and result.stopped_reason == "done":
         console.print(f"[ok]✓ {result.summary}[/ok]")

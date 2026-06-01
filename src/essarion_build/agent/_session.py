@@ -69,6 +69,8 @@ class TaskTurn(BaseModel):
     # "Started Simple HTTP Server"), in order. Surfaced in the next turn's memory
     # so the agent can answer "what did you just do?" with specifics.
     actions: list[str] = Field(default_factory=list)
+    # The agent's final task checklist for the turn (todo/doing/done items).
+    todos: list[dict] = Field(default_factory=list)
     skills_used: list[str] = Field(default_factory=list)
     files_touched: list[str] = Field(default_factory=list)
     usage: Usage = Field(default_factory=Usage)

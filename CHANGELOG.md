@@ -23,6 +23,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - recently-finished background tasks with their exit status.
 - **Live "Thinking…" spinner** (the rotating `|/-\` bar) during every model
   call, so a step never looks frozen while the model works.
+- **Permission policy + guardrails.** The autonomous executor now screens every
+  action: reads are free, writes/edits are allowed (undoable), and shell
+  commands are checked against a built-in dangerous-command list — catastrophic
+  ones (`rm -rf /`, `mkfs`, fork bombs, `dd of=/dev/…`) are **always refused**,
+  risky ones (`sudo`, `git push --force`, `rm -rf …`, `curl … | sh`) prompt for
+  approval (and are denied when there's no interactive user). Configure via
+  `[permissions]` in `.essarion/config.toml` (`shell`/`write`/`delete` =
+  `allow|ask|deny`, plus `allow`/`ask`/`deny` regex lists). `/yolo` downgrades
+  "ask" to "allow" — but never the catastrophic list.
+- **Live todo checklist.** The agent maintains a task list via an `update_todos`
+  tool and renders it with state glyphs (`☐` todo, `▶` doing, `☑` done) as it
+  works, so long autonomous runs stay legible. Stored on the turn for memory.
+- **Secret redaction in output + memory.** API keys / tokens / private keys are
+  stripped from rendered tool output and from the conversation memory that rides
+  along in the prompt.
+
+### Performance
+
+- **Prompt caching across multi-step turns.** The executor's system prompt is
+  reordered so the stable prefix (protocol + tool manifest) comes first for
+  cross-turn cache reuse, and the Anthropic provider now also caches the
+  *growing message history* (an ephemeral breakpoint on the latest message), so
+  each step reuses prior steps' cached tokens instead of re-billing them. Cache
+  hits are now shown in the usage line and footer (`385 tokens (210 cached)`).
 
 ### Changed
 

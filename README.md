@@ -90,10 +90,16 @@ classic **plan → approve → hand-apply** flow:
    also remembers the conversation, so "what did you just do?" or "how do I
    reach the server?" are answered from memory, and it can **ask you
    multiple-choice questions** mid-task when something's genuinely ambiguous.
-3. **Token meter, no forced budget.** Every turn shows tokens + cost; there's
-   **no spending cap by default**. Set one any time with `/budget` (it'll
-   prompt) or `--budget 5`, and `/cost <path>` estimates a hypothetical
-   context before you send it.
+3. **Token meter, no forced budget.** Every turn shows tokens + cost (and
+   cache hits); there's **no spending cap by default**. Set one any time with
+   `/budget` (it'll prompt) or `--budget 5`, and `/cost <path>` estimates a
+   hypothetical context before you send it.
+3. **Guardrails + a live checklist.** Catastrophic commands (`rm -rf /`,
+   `mkfs`, fork bombs) are always refused and risky ones (`sudo`, force-push,
+   `curl | sh`) prompt for approval — tune it under `[permissions]` in
+   `.essarion/config.toml`, or `/yolo` to wave it through. The agent keeps a
+   visible todo checklist (`☐ ▶ ☑`) on multi-step tasks, and secrets are
+   redacted from output and memory.
 3. **Smart skill selection.** The 54 bundled skills aren't all loaded
    every turn — a fast keyword picker chooses the 3-5 most relevant
    ones. Big context savings on every call.
