@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.5] - 2026-06-01
+
+The Claude-Code-parity release. The autonomous agent gains **conversation
+memory** (it remembers what it built and what's running), an interactive
+**`ask_user`** tool, a **live todo checklist**, **permission guardrails** with a
+dangerous-command denylist, **prompt caching** across multi-step turns, a live
+**"Thinking…"** spinner, **collapsed** Claude-Code-style output, **secret
+redaction**, and **no spending cap** by default.
+
 ### Added
 
 - **Interactive `ask_user` tool.** Mid-task the agent can ask you multiple-choice
