@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "essarion-build"
-version = "0.3.3"
-description = "BYOK reasoning amplification SDK + CLI coding agent. Plan-first, token-efficient, works with any LLM."
+version = "0.3.4"
+description = "BYOK reasoning amplification SDK + CLI coding agent. Agentic by default, token-efficient, works with any LLM."
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]

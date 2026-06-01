@@ -519,11 +519,12 @@ def _cmd_stream(console: Console, session: Session, args: str) -> CommandResult:
 
 
 def _cmd_auto(console: Console, session: Session, args: str) -> CommandResult:
-    """Toggle autonomous ("auto") mode.
+    """Toggle autonomous ("auto") mode — ON by default.
 
-    When ON, an approved plan is executed autonomously with real disk tools
-    (write/edit/delete/shell) until the goal is done, instead of producing one
-    code blob to apply by hand.
+    When ON (the default), a task is planned internally and then executed
+    autonomously with real disk tools (write/edit/delete/run_shell) in a loop
+    until the goal is done — no approval stop. When OFF, the agent falls back to
+    the classic plan → approve → hand-apply-one-change flow.
     """
     arg = args.strip().lower()
     if arg == "on":
@@ -540,8 +541,14 @@ def _cmd_auto(console: Console, session: Session, args: str) -> CommandResult:
     console.print(f"[{style}]autonomous mode: {state}[/{style}]")
     if session.autonomous:
         console.print(
-            "[hint]approved plans now run end-to-end on disk "
-            "(write/edit/delete/shell). /undo and /diff still work.[/hint]"
+            "[hint]tasks now plan internally then run end-to-end on disk "
+            "(write/edit/delete/shell) until done — no approval stop. "
+            "/undo and /diff still work.[/hint]"
+        )
+    else:
+        console.print(
+            "[hint]plan-first mode: you'll see the plan, approve it, then apply "
+            "one change by hand.[/hint]"
         )
     return "continue"
 
@@ -1200,7 +1207,7 @@ COMMANDS: dict[str, tuple[Callable, str]] = {
     "/cost": (_cmd_cost, "show session cost ledger or estimate against a path"),
     "/stream": (_cmd_stream, "toggle streamed draft output (token-by-token)"),
     "/goal": (_cmd_goal, "pursue a goal autonomously until done — no stops (e.g. /goal run all tests)"),
-    "/auto": (_cmd_auto, "toggle autonomous mode (run approved plans on disk)"),
+    "/auto": (_cmd_auto, "toggle autonomous mode (ON by default; off = plan→approve→hand-apply)"),
     "/computer": (_cmd_computer, "toggle computer use (drive a real browser; opt-in)"),
     "/desktop": (_cmd_desktop, "toggle DESKTOP control (real mouse/keyboard/screen; gated)"),
     "/effort": (_cmd_effort, "show or set reasoning depth (quick/standard/deep/max/auto)"),
@@ -1244,7 +1251,7 @@ def _try_custom_command(
     from pathlib import Path
 
     from ._project import find_project_root
-    from ._loop import run_turn
+    from ._loop import run_task
 
     name = cmd.lstrip("/")
     if not name:
@@ -1263,7 +1270,7 @@ def _try_custom_command(
                     f"[err]custom command {cmd} produced an empty task[/err]"
                 )
                 return "continue"
-            run_turn(console, session, task)
+            run_task(console, session, task)
             return "continue"
     return None
 

@@ -82,6 +82,18 @@ def show_banner(
         "max": "max — + alternative-plan + synthesis",
     }.get(session.effort, session.effort)
     table.add_row("reasoning", f"[brand]{_effort_blurb}[/brand]")
+    if getattr(session, "autonomous", True):
+        table.add_row(
+            "mode",
+            "[brand]autonomous[/brand] [hint](agentic: writes/edits/runs on disk "
+            "until done — /auto off for plan-first)[/hint]",
+        )
+    else:
+        table.add_row(
+            "mode",
+            "[brand]plan-first[/brand] [hint](plan → approve → hand-apply — "
+            "/auto on for autonomous)[/hint]",
+        )
     console.print(table)
     console.print()
     console.print(
@@ -101,6 +113,7 @@ def render_phase_header(console: Console, phase: str) -> None:
     label = {
         "plan": "[phase.plan]── plan ──[/phase.plan]",
         "draft": "[phase.draft]── draft ──[/phase.draft]",
+        "build": "[phase.draft]── build ──[/phase.draft] [hint](autonomous — writing to disk)[/hint]",
         "selfcheck": "[phase.selfcheck]── selfcheck ──[/phase.selfcheck]",
     }.get(phase, phase)
     console.print(label)

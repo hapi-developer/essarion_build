@@ -119,3 +119,10 @@ def test_new_session_id_is_unique() -> None:
     b = new_session_id()
     assert a != b
     assert len(a.split("-")) == 3
+
+
+def test_session_defaults_to_autonomous() -> None:
+    """Autonomous (agentic) mode is the DEFAULT: a bare session builds tasks
+    end-to-end on disk in a loop, rather than the plan→approve→hand-apply flow."""
+    s = Session(id="x", cwd=".", provider="stub", model="m")
+    assert s.autonomous is True

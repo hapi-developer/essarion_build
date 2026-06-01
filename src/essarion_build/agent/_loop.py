@@ -851,18 +851,20 @@ def run_turn(console, session: Session, task: str) -> None:
     _hooks.fire("stop", {"task": task, "files_touched": turn.files_touched}, console)
 
 
-def run_turn_autonomous(console, session: Session, task: str, *, auto_approve: bool = False):
-    """Plan-first, then execute the approved plan autonomously with real tools.
+def run_turn_autonomous(console, session: Session, task: str):
+    """Plan internally, then build the whole task autonomously with real tools.
 
-    Keeps the same plan→approve gate as `run_turn` (the one human checkpoint),
-    but instead of emitting a single code blob for the user to save by hand, it
-    hands the goal to the agentic executor, which creates/edits/deletes files
-    and runs commands directly on disk until the goal is done. This is the
-    Claude-Code / Codex-style "auto" mode.
+    This is the default, Claude-Code / Codex-style "agentic" turn. The agent
+    sizes a quick internal plan (no approval prompt — planning happens
+    internally, you just see it), then hands the goal to the agentic executor,
+    which creates/edits/deletes files and runs commands directly on disk, in a
+    loop, until the goal is done or a safety cap is hit. There is no "apply one
+    file" step — every change lands immediately and is captured in the change
+    log so `/undo` and `/diff` still work.
 
-    `auto_approve=True` (used by /goal) skips the plan prompt — the user has
-    pre-authorized — so the agent runs end-to-end without stopping. Returns the
-    executor's ExecResult (or None if it bailed before executing).
+    Returns the executor's ExecResult (or None if it bailed before executing).
+    For the classic plan → approve → hand-apply flow, use `/auto off` (which
+    routes to `run_turn`).
     """
     from . import _agent_exec
     from ._changes import ChangeLog, current_changelog
@@ -896,33 +898,13 @@ def run_turn_autonomous(console, session: Session, task: str, *, auto_approve: b
     turn.tradeoffs = r.tradeoffs
     turn.verdict = r.verdict
 
-    # 2. Budget check + plan approval (the one gate we keep in auto mode).
+    # 2. Budget check only — NO approval gate. Planning happened internally
+    #    above; the agent now executes straight through, Claude-Code style. Use
+    #    `/auto off` if you want the plan → approve → hand-apply checkpoint back.
     if not _check_budget(console, session, turn):
         session.record(turn)
         _ui.render_footer(console, session)
-        return
-    choice = "approve" if auto_approve else _ui.prompt_approve_plan(console)
-    if choice == "cancel":
-        console.print("[meta]cancelled.[/meta]")
-        session.record(turn)
-        _ui.render_usage_line(
-            console, label="turn usage", usage_total=turn.usage.total_tokens,
-            cost_usd=turn.cost_usd, budget_usd=session.budget_usd,
-        )
-        _ui.render_footer(console, session)
         return None
-    if choice == "edit":
-        edited = _ui.prompt_text(
-            console,
-            "[brand]rewrite the plan (paste your version)[/brand]",
-            default=r.plan,
-        )
-        if edited:
-            ctx.add_note(
-                "The user has revised the plan. Use this as the authoritative plan:\n\n"
-                + edited
-            )
-            turn.plan = edited
 
     # 3. AUTONOMOUS EXECUTION — real disk writes/edits/deletes + shell.
     _ui.render_phase_header(console, "build")
@@ -1010,16 +992,17 @@ def run_goal(console, session: Session, goal: str, *, max_rounds: int = 6) -> No
     """Work autonomously toward `goal` until it's DONE — no stopping to ask.
 
     The single autonomous turn already runs to <done> or a step cap; /goal adds
-    two things: it auto-approves the plan (the user pre-authorized by invoking
-    /goal), and if a round stops at the step cap without finishing, it continues
+    one thing: if a round stops at the step cap without finishing, it continues
     automatically — up to `max_rounds` or until the budget runs out. So
-    `/goal run all tests and fix failures` just works until accomplished."""
+    `/goal run all tests and fix failures` just works until accomplished. (Since
+    autonomous turns no longer stop for approval, /goal is now mostly a
+    convenience wrapper that loops past the per-turn step cap.)"""
     session.autonomous = True
     console.print(f"[brand]🎯 goal:[/brand] {goal}")
     console.print("[hint]working autonomously until done — no approval stops. Ctrl-C to halt.[/hint]")
     current = goal
     for rnd in range(1, max_rounds + 1):
-        result = run_turn_autonomous(console, session, current, auto_approve=True)
+        result = run_turn_autonomous(console, session, current)
         if result is None:
             return
         if result.stopped_reason == "done":
@@ -1034,6 +1017,22 @@ def run_goal(console, session: Session, goal: str, *, max_rounds: int = 6) -> No
         console.print(f"[meta]🎯 round {rnd} hit the step cap; continuing toward the goal…[/meta]")
         current = f"Continue working until this goal is fully accomplished, then emit <done>:\n{goal}"
     console.print(f"[warn]🎯 reached the {max_rounds}-round limit; goal may be incomplete.[/warn]")
+
+
+def run_task(console, session: Session, task: str) -> None:
+    """Dispatch a free-text task to the right loop for the session's mode.
+
+    Autonomous (the default) → the agentic build loop: plan internally, then
+    create/edit/delete files and run commands on disk until done, no approval.
+    Plan-first (`/auto off`) → plan → approve → hand-apply one change.
+
+    This is the single entry point the REPL, the one-shot CLI, and custom
+    slash commands all funnel through, so the mode is honored everywhere.
+    """
+    if getattr(session, "autonomous", True):
+        run_turn_autonomous(console, session, task)
+    else:
+        run_turn(console, session, task)
 
 
 def repl(console, session: Session) -> None:
@@ -1067,10 +1066,7 @@ def repl(console, session: Session) -> None:
             return
         if cmd_result is not None:
             continue
-        # Not a slash command → treat as a task. In autonomous ("auto") mode the
-        # approved plan is executed end-to-end on disk; otherwise it's the
-        # plan-first, hand-applied flow.
-        if getattr(session, "autonomous", False):
-            run_turn_autonomous(console, session, line)
-        else:
-            run_turn(console, session, line)
+        # Not a slash command → treat as a task. Autonomous (the default) builds
+        # the whole task end-to-end on disk in a loop; plan-first (`/auto off`)
+        # uses the plan → approve → hand-apply flow.
+        run_task(console, session, line)

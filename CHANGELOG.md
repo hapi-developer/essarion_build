@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.4] - 2026-06-01
+
+The autonomous release. The CLI agent is now **agentic by default** — like
+Claude Code or Codex, it plans internally and then creates/edits/deletes files
+and runs shell commands in a loop until the whole task is done, with **no
+plan-approval gate** and **no single-file "apply" step**. Multi-file scaffolds,
+"run the tests and fix failures", and full end-to-end tasks now just work from a
+plain prompt. The classic plan → approve → hand-apply flow is one keystroke
+away (`/auto off` or `--plan-first`).
+
+### Changed
+
+- **Autonomous mode is now the DEFAULT.** A bare task (in the REPL, one-shot
+  `--task`, or a custom slash command) now runs the Claude-Code / Codex-style
+  agentic loop: the agent plans *internally*, then creates/edits/deletes files
+  and runs commands directly on disk, looping until the whole task is done —
+  no "approve this plan?" gate and no "apply to which file?" prompt. Previously
+  the default was the plan-first flow that emitted a single code blob to apply
+  by hand, which made the agent feel like it "did one file and stopped".
+- **Removed the plan-approval gate from the autonomous turn.** Planning is now
+  internal; execution proceeds straight through. The classic
+  plan → approve → hand-apply flow is still available via `/auto off` or the
+  new `--plan-first` (`--no-auto`) flag.
+
+### Added
+
+- **`--plan-first` / `--no-auto`** CLI flag to opt out of autonomous mode.
+- **`run_task()`** — a single mode-aware dispatcher the REPL, the one-shot CLI,
+  and custom slash commands all funnel through, so the autonomous/plan-first
+  choice is honored everywhere.
+
+### Improved
+
+- The autonomous executor's system prompt now explicitly tells the agent to
+  build the **complete** solution (all files, configs, entry points, tests),
+  run/verify its work, and not stop after a single file.
+- The loop **nudges** the model to keep going (up to twice) when a step
+  produces neither a tool call nor `<done>`, instead of ending the task on a
+  transient prose-only step.
+- Running narration strips structural reasoning tags so it reads like clean
+  prose rather than raw XML.
+
 ## [0.3.3] - 2026-06-01
 
 ### Added

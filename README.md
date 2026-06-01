@@ -1,6 +1,6 @@
 # essarion-build
 
-A **BYOK reasoning amplification SDK + CLI coding agent**, by Essarion. Bring your own model provider; `essarion-build` provides the reasoning loop, the grounding context, the bundled software-development skills, and the structured outputs. The CLI agent gives you an interactive, plan-first coding experience powered by the same SDK.
+A **BYOK reasoning amplification SDK + CLI coding agent**, by Essarion. Bring your own model provider; `essarion-build` provides the reasoning loop, the grounding context, the bundled software-development skills, and the structured outputs. The CLI agent gives you an interactive, **autonomous (agentic) coding experience by default** — like Claude Code or Codex, it plans internally and then creates/edits/deletes files and runs commands in a loop until the task is done — powered by the same SDK. A `/auto off` (plan-first) mode is one keystroke away when you want a checkpoint.
 
 `essarion-build` is not a wrapper for any single LLM. It is a deliberate **plan → draft → self-check** pipeline that turns *whatever model you wire in* into a more thoughtful coder. The default is tuned to amplify **cheap** models — making a small, fast GPT reason about coding the way a senior engineer would, while spending a fraction of the tokens of a single-shot generation from a bigger model.
 
@@ -40,26 +40,41 @@ $ essarion
   type your task to begin · /help for commands · /quit to exit
   ────────────────────────────────────────────────────────────
 
-you: review src/auth.py for JWT alg=none confusion
+you: set up a codebase for a Next.js app with a todo API and tests
 
-  skills: auth_security web_security secure_coding scope_discipline error_handling
-  auto-loaded: src/auth.py
+  skills: containers dx caching scope_discipline error_handling
+  auto-loaded: (none)
 
   ── plan ──
   ┌──────────────────────────────────────────────────────────────┐
   │ plan                                                         │
-  │  1. Verify the JWT lib's alg=none handling                   │
-  │  2. Add an explicit allow-list of allowed algorithms         │
-  │  3. Reject tokens whose alg header is missing                │
-  │                                                              │
-  │ tradeoffs                                                    │
-  │  • chosen: whitelist (HS256 only) — closes alg=none family   │
-  │  • rejected: blacklist — every new algorithm becomes risky   │
-  │                                                              │
-  │ verdict                                                      │
-  │  do not ship without resolving step 2                        │
+  │  1. Scaffold package.json, tsconfig, next.config             │
+  │  2. Add app/ routes + an /api/todos route handler            │
+  │  3. Add a tests/ suite and wire the test script              │
   └──────────────────────────────────────────────────────────────┘
 
+  ── build ──                       (no approval stop — it just works)
+  → write_file(path='package.json')              ✓
+  → write_file(path='tsconfig.json')             ✓
+  → write_file(path='app/page.tsx')              ✓
+  → write_file(path='app/api/todos/route.ts')    ✓
+  → write_file(path='tests/todos.test.ts')       ✓
+  → run_shell(cmd='npm install')                 ✓
+  → run_shell(cmd='npm test')                    ✓  2 passing
+  ✓ Next.js app scaffolded with a todo API and a passing test suite
+
+  diff ▸ 5 files created · turn usage 12,403 tokens · $0.004 of $1.00
+  ────────────────────────────────────────────────────────────
+```
+
+By **default the agent is autonomous** (like Claude Code / Codex): it plans
+internally, then creates/edits/deletes files and runs commands in a loop until
+the whole task is done — no "approve this plan" or "apply to which file?"
+stops. Every change is captured in the change log, so `/undo` and `/diff` still
+work. Prefer a checkpoint? `/auto off` (or `--plan-first`) switches to the
+classic **plan → approve → hand-apply** flow:
+
+```text
   approve plan? (Enter=approve, e=edit, s=skip-to-draft, c=cancel) _
 ```
 
@@ -70,9 +85,13 @@ you: review src/auth.py for JWT alg=none confusion
    while reserving the deep critique→revise loop for tasks with real
    stakes. You see the depth it chose. Override live with `/effort deep`.
    This is the whole bet: better reasoning, paid for only where it counts.
-2. **Plan-first interactivity.** You see the plan and verdict BEFORE the
-   draft is paid for. Edit it, reject it, or send it back. No other agent
-   does this — most jump straight to writing code.
+2. **Autonomous by default, with an optional plan checkpoint.** Out of the
+   box the agent works like Claude Code / Codex: it plans internally, then
+   writes/edits/deletes files and runs commands in a loop until the task is
+   done — no approval stops. When you *want* a checkpoint, `/auto off` (or
+   `--plan-first`) gives you the plan + verdict BEFORE any code is paid for,
+   so you can edit, reject, or send it back. Most agents force one mode; this
+   gives you both.
 3. **Live token-budget meter + projected cost.** Every session has a
    configurable USD budget. Before each turn the agent prints a projected
    cost based on your current context size. After each turn you see the
@@ -115,6 +134,7 @@ essarion --task "review src/auth.py"      # one-shot non-interactive
 essarion --provider anthropic --model claude-sonnet-4-6
 essarion --budget 5.00 --escalate claude-sonnet-4-6   # cheap+escalate
 essarion --resume 20260528-195838-5e4b    # continue a saved session
+essarion --plan-first "harden the JWT check"  # opt out of autonomous mode
 essarion --skills all                     # load every skill (vs auto)
 essarion --effort deep                    # force deep reasoning every turn
 essarion --effort quick                   # force minimal reasoning (cheapest)

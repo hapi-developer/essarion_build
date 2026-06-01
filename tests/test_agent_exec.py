@@ -143,3 +143,57 @@ def test_run_turn_autonomous_end_to_end(monkeypatch, console, session, tmp_path)
 
     out = console.file.getvalue()
     assert "build" in out  # the ── build ── phase header rendered
+
+
+def test_autonomous_turn_does_not_prompt_for_approval(
+    monkeypatch, console, session, tmp_path
+) -> None:
+    """The default agentic turn plans internally and builds straight through —
+    it must NOT stop to ask the user to approve the plan."""
+    _AutoProvider.reset()
+    monkeypatch.setitem(
+        _PROVIDER_REGISTRY, "stub",
+        lambda *, api_key=None, model: _AutoProvider(api_key=api_key, model=model),
+    )
+
+    def _boom(_console):
+        raise AssertionError("autonomous mode must not prompt for plan approval")
+
+    monkeypatch.setattr(_ui, "prompt_approve_plan", _boom)
+
+    # No exception → the approval gate was never hit, and the files got built.
+    _loop.run_turn_autonomous(console, session, "write a greeting helper and a CLI")
+    assert (tmp_path / "greet.py").is_file()
+    assert (tmp_path / "cli.py").is_file()
+
+
+def test_execute_nudges_past_a_prose_only_step(console, session, tmp_path) -> None:
+    """A single prose-only step (no tool call, no <done>) shouldn't end the task
+    — the loop nudges the model to keep going, and it then finishes the work."""
+    stub = StubProvider(
+        responses=[
+            "Let me think about how to approach this…",          # prose only
+            _call("write_file", path="made.txt", content="ok\n"),  # then it acts
+            "<done>created made.txt</done>",
+        ],
+        auto_respond=False,
+    )
+    result = _agent_exec.execute(
+        console, session, "create made.txt", Context(),
+        make_runtime=lambda p, m: LiteRuntime(stub),
+    )
+    assert (tmp_path / "made.txt").is_file()
+    assert result.stopped_reason == "done"
+
+
+def test_execute_gives_up_after_repeated_no_action(console, session) -> None:
+    """If the model never acts, the loop nudges a bounded number of times and
+    then stops with no_action — it does not spin forever."""
+    stub = StubProvider(responses=["thinking, no actions…"] * 10, auto_respond=False)
+    result = _agent_exec.execute(
+        console, session, "stall", Context(),
+        make_runtime=lambda p, m: LiteRuntime(stub), max_steps=20,
+    )
+    assert result.stopped_reason == "no_action"
+    # 2 nudges + the final give-up step = 3 model calls, well under the cap.
+    assert result.steps == 3

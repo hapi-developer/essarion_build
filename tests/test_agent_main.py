@@ -37,15 +37,19 @@ def test_main_dispatches_providers_subcommand(capsys) -> None:
 def test_main_runs_agent_non_interactive_with_task_arg(
     monkeypatch, capsys, tmp_path
 ) -> None:
-    """`essarion --task "..."` runs one turn without entering the REPL."""
-    # Patch run_turn so we don't need a real provider for this test.
+    """`essarion --task "..."` runs one turn without entering the REPL.
+
+    Autonomous is the default now, so a bare task routes to the agentic build
+    loop (`run_turn_autonomous`), not the plan-first `run_turn`."""
+    # Patch the autonomous runner so we don't need a real provider here.
     called: dict[str, str] = {}
 
-    def fake_run_turn(console, session, task):
+    def fake_run(console, session, task):
         called["task"] = task
         called["model"] = session.model
+        called["autonomous"] = session.autonomous
 
-    monkeypatch.setattr("essarion_build.agent._loop.run_turn", fake_run_turn)
+    monkeypatch.setattr("essarion_build.agent._loop.run_turn_autonomous", fake_run)
 
     rc = agent_main.run_agent(
         [
@@ -62,6 +66,7 @@ def test_main_runs_agent_non_interactive_with_task_arg(
     assert rc == 0
     assert called["task"] == "review src/auth.py"
     assert called["model"] == "stub-model"
+    assert called["autonomous"] is True  # autonomous is the default
 
 
 def test_task_text_joins_multiword_task_flag() -> None:
@@ -82,6 +87,40 @@ def test_task_text_joins_bare_positional_words() -> None:
 def test_no_task_means_repl() -> None:
     parser = agent_main.build_agent_parser()
     assert agent_main._task_text(parser.parse_args([])) == ""
+
+
+def test_resolve_autonomous_default_and_opt_out() -> None:
+    """Autonomous is the default; `--plan-first` opts out; explicit `--auto`
+    (and computer/desktop) force it back on."""
+    parser = agent_main.build_agent_parser()
+    assert agent_main._resolve_autonomous(parser.parse_args([])) is True
+    assert agent_main._resolve_autonomous(parser.parse_args(["--plan-first"])) is False
+    assert agent_main._resolve_autonomous(parser.parse_args(["--no-auto"])) is False
+    # Explicit --auto wins even if --plan-first is also passed.
+    assert agent_main._resolve_autonomous(
+        parser.parse_args(["--auto", "--plan-first"])
+    ) is True
+
+
+def test_plan_first_flag_routes_to_run_turn(monkeypatch, tmp_path) -> None:
+    """`essarion --plan-first --task ...` uses the classic plan-first runner."""
+    called: dict = {}
+    monkeypatch.setattr(
+        "essarion_build.agent._loop.run_turn",
+        lambda console, session, task: called.update(task=task, mode="plan-first"),
+    )
+    # Guard: the autonomous runner must NOT be used in plan-first mode.
+    monkeypatch.setattr(
+        "essarion_build.agent._loop.run_turn_autonomous",
+        lambda *a, **k: called.update(mode="autonomous"),
+    )
+    rc = agent_main.run_agent(
+        ["--plan-first", "--task", "do a thing", "--cwd", str(tmp_path),
+         "--provider", "stub", "--model", "m"]
+    )
+    assert rc == 0
+    assert called["mode"] == "plan-first"
+    assert called["task"] == "do a thing"
 
 
 def test_bare_invocation_opens_the_repl(monkeypatch, tmp_path) -> None:
@@ -146,14 +185,14 @@ def test_main_resume_loads_prior_session(monkeypatch, tmp_path) -> None:
     )
     save_session(prior)
 
-    # Patch run_turn so resume completes without a network call.
+    # Patch the autonomous runner (the default) so resume completes offline.
     captured: dict = {}
 
-    def fake_run_turn(console, session, task):
+    def fake_run(console, session, task):
         captured["session_id"] = session.id
         captured["history_len"] = len(session.history)
 
-    monkeypatch.setattr("essarion_build.agent._loop.run_turn", fake_run_turn)
+    monkeypatch.setattr("essarion_build.agent._loop.run_turn_autonomous", fake_run)
 
     agent_main.run_agent(
         ["--task", "next task", "--resume", sid, "--cwd", str(tmp_path)]

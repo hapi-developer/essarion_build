@@ -87,10 +87,13 @@ class Session(BaseModel):
     # sizes each task and routes to quick/standard/deep. Cheap on easy
     # tasks, deep only when warranted.
     effort: str = "auto"  # "quick" | "standard" | "deep" | "max" | "auto"
-    # "auto" permission mode: after plan approval, execute the plan autonomously
-    # with real disk tools (write/edit/delete/shell) instead of emitting one
-    # code blob to save by hand. The cloud defaults this on.
-    autonomous: bool = False
+    # Autonomous ("agentic") mode — the DEFAULT. The agent plans internally
+    # (no approval gate), then drives the real disk tools (write/edit/delete/
+    # run_shell + background) in a Claude-Code / Codex-style loop until the whole
+    # task is done — creating many files, running commands, fixing failures —
+    # instead of emitting one code blob to apply by hand. Switch to the classic
+    # plan → approve → hand-apply flow with `/auto off` or `--plan-first`.
+    autonomous: bool = True
     # Computer use (opt-in): allow the agent to drive a real browser/desktop via
     # the reactive computer-use tools. Never on by default; set by --computer-use,
     # /computer, or an unambiguous request. Implies autonomous execution.
