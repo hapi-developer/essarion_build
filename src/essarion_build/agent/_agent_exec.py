@@ -83,9 +83,28 @@ class ExecResult(BaseModel):
     """Outcome of an autonomous run."""
 
     files_touched: list[str] = Field(default_factory=list)
+    # Human-readable actions taken this run, in order ("Created index.html",
+    # "Ran ls -l", "Started Simple HTTP Server"). Stored on the turn for memory.
+    actions: list[str] = Field(default_factory=list)
     steps: int = 0
     summary: str = ""
     stopped_reason: str = "done"  # done | max_steps | budget | no_action | error
+
+
+def _infer_url(cmd: str) -> str | None:
+    """Best-effort 'this server is probably reachable at …' for a background
+    command, so 'how do I reach the server?' can be answered from memory."""
+    m = re.search(r"(?:--port[=\s]+|-p\s+|:)(\d{2,5})\b", cmd)
+    if not m:
+        m = re.search(r"http\.server\s+(\d{2,5})", cmd)
+    if m:
+        return f"http://localhost:{m.group(1)}"
+    # Common framework defaults when no explicit port is given.
+    for needle, port in (("next", "3000"), ("vite", "5173"), ("flask", "5000"),
+                         ("rails", "3000"), ("http.server", "8000")):
+        if needle in cmd:
+            return f"http://localhost:{port}"
+    return None
 
 
 def _system_prompt(ctx: Context, memory: str = "") -> str:
@@ -136,35 +155,62 @@ def _system_prompt(ctx: Context, memory: str = "") -> str:
 
 
 def _conversation_memory(session: Session) -> str:
-    """A compact recap of prior turns + still-running background processes, so a
-    follow-up ('what did you just do?', 'how do I reach the server?') is answered
-    from memory instead of blindly groping the filesystem."""
+    """A recap of prior turns (with the concrete actions of the most recent one)
+    plus live background-process state, so a follow-up — 'what did you just do?',
+    'what's running?', 'how do I reach the server?' — is answered precisely from
+    memory instead of blindly groping the filesystem."""
     history = getattr(session, "history", None) or []
     lines: list[str] = []
-    for t in history[-6:]:
+    for i, t in enumerate(history[-6:]):
+        is_last = i == len(history[-6:]) - 1
         task = " ".join((t.task or "").split())[:200]
         summary = " ".join((getattr(t, "summary", "") or getattr(t, "verdict", "") or "").split())[:200]
-        files = ", ".join((t.files_touched or [])[:8])
+        files = ", ".join((t.files_touched or [])[:10])
         entry = f'- You asked: "{task}"'
         if summary:
             entry += f" → {summary}"
         if files:
             entry += f" [files: {files}]"
+        # For the MOST RECENT turn, spell out exactly what was done so the user
+        # can ask precise follow-ups about it.
+        actions = getattr(t, "actions", None) or []
+        if is_last and actions:
+            shown = actions[:14]
+            entry += "\n    actions just taken:\n" + "\n".join(f"      · {a}" for a in shown)
+            if len(actions) > len(shown):
+                entry += f"\n      · (+{len(actions) - len(shown)} more)"
         lines.append(entry)
-    bg_lines: list[str] = []
+
+    # Live background-process state: running ones (with a reachable-URL hint for
+    # servers) and the most recent finished ones (with exit status).
+    running: list[str] = []
+    finished: list[str] = []
     try:
         from . import _background
 
         for bt in _background.current_manager().poll_all():
+            cmd = getattr(bt, "cmd", "") or ""
             if getattr(bt, "is_running", False):
-                bg_lines.append(f"- [{bt.id}] {bt.name}: `{bt.cmd}` (running)")
+                url = _infer_url(cmd)
+                tail = f" — likely reachable at {url}" if url else ""
+                running.append(f"- [{bt.id}] {bt.name}: `{cmd}` (running{tail})")
+            else:
+                code = getattr(bt, "exit_code", None)
+                status = getattr(bt, "status", "finished")
+                finished.append(
+                    f"- [{bt.id}] {bt.name}: `{cmd}` ({status}"
+                    + (f", exit {code}" if code is not None else "") + ")"
+                )
     except Exception:  # noqa: BLE001 - memory must never break a turn
         pass
+
     blocks: list[str] = []
     if lines:
         blocks.append("CONVERSATION SO FAR (earlier turns this session, oldest→newest):\n" + "\n".join(lines))
-    if bg_lines:
-        blocks.append("BACKGROUND PROCESSES you started that are still running:\n" + "\n".join(bg_lines))
+    if running:
+        blocks.append("BACKGROUND PROCESSES still running (you started these):\n" + "\n".join(running))
+    if finished:
+        blocks.append("RECENTLY FINISHED background tasks:\n" + "\n".join(finished[-4:]))
     return "\n\n".join(blocks)
 
 
@@ -314,6 +360,7 @@ def execute(
 
     result = ExecResult()
     touched: list[str] = []
+    actions_log: list[str] = []  # human-readable recap of what we did, for memory
     nudges = 0  # consecutive no-action steps we've prodded the model through
 
     for step in range(1, max_steps + 1):
@@ -327,9 +374,12 @@ def execute(
                 break
 
         try:
-            resp = provider.complete(
-                system=system, messages=messages, max_tokens=session.max_tokens
-            )
+            # Live "Thinking…" spinner (the rotating |/-\ bar) while the model
+            # works, so a step never looks frozen during the model call.
+            with console.status("[brand]Thinking…[/brand]", spinner="line"):
+                resp = provider.complete(
+                    system=system, messages=messages, max_tokens=session.max_tokens
+                )
         except Exception as e:  # noqa: BLE001 - one bad call shouldn't crash the worker
             console.print(f"[err]autonomous step failed: {type(e).__name__}: {e}[/err]")
             result.stopped_reason = "error"
@@ -385,22 +435,22 @@ def execute(
             # registry) so it can prompt the real user and feed the choice back.
             if name == "ask_user":
                 body = _ui.ask_user_questions(console, args)
+                actions_log.append("Asked the user a question")
                 result_blocks.append(f'<tool_result name="ask_user">{body}</tool_result>')
                 continue
 
             existed = name == "write_file" and (Path(session.cwd) / str(args.get("path", ""))).exists()
             ok, body = _run_one(name, raw_args, allow)
 
+            verb = _verb_for(name, existed)
+            target = _target_for(name, args)
             diff = _edit_diff(args) if (name == "apply_diff" and ok) else ""
             show_output = (not ok) or name in _SHOW_OUTPUT or name.startswith(("browser_", "desktop_"))
             _ui.render_action(
-                console,
-                verb=_verb_for(name, existed),
-                target=_target_for(name, args),
-                ok=ok,
-                diff=diff,
+                console, verb=verb, target=target, ok=ok, diff=diff,
                 output=body if show_output else "",
             )
+            actions_log.append(f"{verb} {target}".strip() + ("" if ok else " (failed)"))
             if ok and name in _MUTATING:
                 path = args.get("path")
                 if path and path not in touched:
@@ -428,6 +478,7 @@ def execute(
         )
 
     result.files_touched = touched
+    result.actions = actions_log
     result.steps = step
     if result.summary and result.stopped_reason == "done":
         console.print(f"[ok]✓ {result.summary}[/ok]")

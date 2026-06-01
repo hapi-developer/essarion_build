@@ -65,6 +65,10 @@ class TaskTurn(BaseModel):
     # <done> summary). Fed into the next turn's conversation memory so the agent
     # remembers what it built when the user asks a follow-up.
     summary: str = ""
+    # The concrete actions taken this turn ("Created index.html", "Ran ls -l",
+    # "Started Simple HTTP Server"), in order. Surfaced in the next turn's memory
+    # so the agent can answer "what did you just do?" with specifics.
+    actions: list[str] = Field(default_factory=list)
     skills_used: list[str] = Field(default_factory=list)
     files_touched: list[str] = Field(default_factory=list)
     usage: Usage = Field(default_factory=Usage)

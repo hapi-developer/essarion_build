@@ -342,7 +342,7 @@ def _run_plan_phase(
     def _do_reason() -> Reasoning | None:
         with console.status(
             "[brand]thinking…[/brand] [hint](plan → selfcheck)[/hint]",
-            spinner="dots",
+            spinner="line",
         ):
             try:
                 return reason(
@@ -459,7 +459,7 @@ def _run_draft_phase(
     else:
         with console.status(
             "[brand]drafting…[/brand] [hint](draft → selfcheck)[/hint]",
-            spinner="dots",
+            spinner="line",
         ):
             try:
                 g = generate(
@@ -486,7 +486,7 @@ def _run_draft_phase(
         turn.escalated = True
         with console.status(
             f"[brand]re-drafting with {session.escalate_model}…[/brand]",
-            spinner="dots",
+            spinner="line",
         ):
             try:
                 g2 = generate(
@@ -574,7 +574,7 @@ def _maybe_handle_workflow(
     runtime = _make_runtime(session.provider, session.model)
     _ui.render_phase_header(console, "plan")
     try:
-        with console.status("[brand]workflow…[/brand]", spinner="dots"):
+        with console.status("[brand]workflow…[/brand]", spinner="line"):
             if head == "review":
                 r = workflows.review(body, context=ctx, _runtime=runtime, effort=session.effort)
             elif head == "security-review":
@@ -998,6 +998,8 @@ def run_turn_autonomous(console, session: Session, task: str):
     # Remember what we did, for the next turn's conversation memory.
     if result.summary:
         turn.summary = result.summary
+    if result.actions:
+        turn.actions = result.actions
 
     # 4. Compact, collapsed summary of this turn's on-disk changes (created /
     #    edited / deleted counts + names). The full diff is one `/diff` away.

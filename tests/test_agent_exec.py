@@ -251,6 +251,37 @@ def test_executor_carries_conversation_memory(session) -> None:
     assert "CONVERSATION SO FAR" in system
 
 
+def test_infer_url_from_background_command() -> None:
+    f = _agent_exec._infer_url
+    assert f("python3 -m http.server 8000") == "http://localhost:8000"
+    assert f("flask run --port 5001") == "http://localhost:5001"
+    assert f("python manage.py runserver 0.0.0.0:8001") == "http://localhost:8001"
+    assert f("next dev") == "http://localhost:3000"   # framework default
+    assert f("echo hello") is None
+
+
+def test_conversation_memory_includes_actions_and_server_url(session, monkeypatch) -> None:
+    """Memory recalls the concrete actions of the last turn AND a reachable URL
+    for a running server, so 'what did you just do?' / 'how do I reach it?' work."""
+    t = TaskTurn(task="serve the site")
+    t.summary = "served it"
+    t.actions = ["Created index.html", "Started Simple HTTP Server"]
+    session.history.append(t)
+
+    class _BG:
+        id = "ab12"; name = "Simple HTTP Server"; cmd = "python3 -m http.server 8000"
+        status = "running"; exit_code = None; is_running = True
+
+    monkeypatch.setattr(
+        "essarion_build.agent._background.current_manager",
+        lambda: type("M", (), {"poll_all": staticmethod(lambda: [_BG()])})(),
+    )
+    mem = _agent_exec._conversation_memory(session)
+    assert "Created index.html" in mem and "Started Simple HTTP Server" in mem
+    assert "http://localhost:8000" in mem
+    assert "still running" in mem
+
+
 def test_execute_gives_up_after_repeated_no_action(console, session) -> None:
     """If the model never acts, the loop nudges a bounded number of times and
     then stops with no_action — it does not spin forever."""

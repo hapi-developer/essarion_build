@@ -14,9 +14,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   your own)", and several questions in a row. Answer by number or type your own.
   Non-blocking in pipes/CI — with no TTY it proceeds with sensible defaults.
 - **Conversation memory in the autonomous loop.** Every turn now carries a recap
-  of prior turns (task → what was built → files touched) and still-running
-  background processes, so follow-ups like "what did you just do?" or "how do I
-  reach the server?" are answered from memory instead of groping the filesystem.
+  of prior turns and live background-process state, so follow-ups are answered
+  precisely from memory instead of groping the filesystem:
+  - the **concrete actions** of the most recent turn ("Created index.html",
+    "Ran ls -l", "Started Simple HTTP Server") — for "what did you just do?";
+  - **running background processes** with an inferred reachable URL
+    (`http://localhost:8000`) — for "what's running?" / "how do I reach it?";
+  - recently-finished background tasks with their exit status.
+- **Live "Thinking…" spinner** (the rotating `|/-\` bar) during every model
+  call, so a step never looks frozen while the model works.
 
 ### Changed
 
