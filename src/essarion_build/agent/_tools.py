@@ -251,19 +251,27 @@ def delete_file(path: str) -> str:
 def run_shell(cmd: str, timeout: int = 30) -> str:
     """Run a shell command in the sandbox root, blocking until exit.
 
+    Runs through a real shell so the operators models reach for — redirection
+    (`>`), pipes (`|`), `&&`/`;`, globs, `$VARS` — work as written. Prefers bash
+    when present, falls back to the system shell.
+
     For long-running commands (dev servers, test suites, installs) use
     `start_background` instead — it returns immediately with a task id.
     """
-    parts = shlex.split(cmd)
+    import shutil
+
     _hooks.before_tool("run_shell", {"command": cmd})
+    shell_exe = shutil.which("bash") or None  # None → subprocess uses /bin/sh
     try:
         result = subprocess.run(
-            parts,
+            cmd,
             cwd=_SANDBOX_ROOT,
             capture_output=True,
             text=True,
             timeout=timeout,
             check=False,
+            shell=True,
+            executable=shell_exe,
         )
     except subprocess.TimeoutExpired:
         return f"(timed out after {timeout}s)"

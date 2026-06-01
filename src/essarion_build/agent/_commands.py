@@ -27,6 +27,7 @@ CommandResult = str  # "continue" | "quit"
 
 _HELP_GROUPS: list[tuple[str, list[str]]] = [
     ("session", ["/whoami", "/history", "/summary", "/save", "/load", "/export", "/clear", "/version", "/quit"]),
+    ("autonomy", ["/goal"]),
     ("planning", ["/ask"]),
     ("workflows", ["/workflows", "/review", "/fix", "/tests", "/refactor", "/docs", "/security", "/perf", "/explain", "/pr"]),
     ("reasoning", ["/effort"]),
@@ -542,6 +543,32 @@ def _cmd_auto(console: Console, session: Session, args: str) -> CommandResult:
             "[hint]approved plans now run end-to-end on disk "
             "(write/edit/delete/shell). /undo and /diff still work.[/hint]"
         )
+    return "continue"
+
+
+def _cmd_goal(console: Console, session: Session, args: str) -> CommandResult:
+    """Pursue a goal autonomously until it's accomplished — no stops.
+
+    Unlike a normal task (which plans, asks you to approve, runs once, and
+    returns), /goal pre-approves the plan and keeps working — continuing past
+    step caps round after round — until the agent emits <done> or the budget
+    runs out. Implies autonomous mode.
+
+    Usage: /goal <what you want accomplished>
+      /goal run all tests and fix any failures
+      /goal build a REST API for todos with tests, then run them
+    """
+    goal = args.strip()
+    if not goal:
+        console.print("[err]usage: /goal <what you want accomplished>[/err]")
+        console.print("[hint]e.g. /goal run all tests and fix failures[/hint]")
+        return "continue"
+    from ._loop import run_goal
+
+    try:
+        run_goal(console, session, goal)
+    except KeyboardInterrupt:
+        console.print("\n[warn]🎯 goal halted.[/warn]")
     return "continue"
 
 
@@ -1172,6 +1199,7 @@ COMMANDS: dict[str, tuple[Callable, str]] = {
     "/ask": (_cmd_ask, "quick reason() only, no draft phase"),
     "/cost": (_cmd_cost, "show session cost ledger or estimate against a path"),
     "/stream": (_cmd_stream, "toggle streamed draft output (token-by-token)"),
+    "/goal": (_cmd_goal, "pursue a goal autonomously until done — no stops (e.g. /goal run all tests)"),
     "/auto": (_cmd_auto, "toggle autonomous mode (run approved plans on disk)"),
     "/computer": (_cmd_computer, "toggle computer use (drive a real browser; opt-in)"),
     "/desktop": (_cmd_desktop, "toggle DESKTOP control (real mouse/keyboard/screen; gated)"),

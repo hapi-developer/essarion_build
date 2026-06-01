@@ -7,13 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.6.0] - 2026-06-01
+## [0.4.0] - 2026-06-01
 
-Past the computer-use boundaries: the model can **see**, the desktop tier is
-**cross-platform**, the desktop can **read text**, and the **cloud** can drive a
-browser.
+The agentic release — everything since the published 0.3.1. Autonomous "auto"
+mode, lifecycle hooks, a Claude-Code-style CLI, real-model tool-call robustness,
+the `/goal` no-stop command, and **computer use** (browser + desktop, reactive
+and expectation-checked, with the model able to *see* the screen).
 
-### Added
+- **`/goal <task>`** — pursue a goal autonomously until it's accomplished:
+  pre-approves the plan and keeps working across step caps, round after round,
+  until the agent emits `<done>` or the budget runs out. No stopping to ask.
+  e.g. `/goal run all tests and fix any failures`.
+
+### Computer use — vision, cross-platform, OCR, cloud
 - **Vision seam (the model SEES).** Message content can be a list of neutral
   blocks (`text_block` / `image_block`); each provider renders them to its
   native multimodal shape (OpenAI/OpenRouter, Anthropic, Gemini), and a plain
@@ -38,9 +44,9 @@ browser.
 - 579 passing; real X11 under Xvfb (move/capture/diff + OCR + full agent loop);
   live vision read-through; cloud worker driving a real headless browser.
 
-## [0.5.0] - 2026-06-01
+### Computer use — desktop tier (control the real machine)
 
-**Computer use — desktop tier.** Computer use now extends from the browser to
+Computer use extends from the browser to
 the *real machine*: the agent can move the mouse, type, press keys, scroll, and
 screenshot the actual screen, observing changes via screen diffing. Same
 reactive spine (observe→digest→act), same expectation-checked acting.
@@ -78,9 +84,9 @@ reactive spine (observe→digest→act), same expectation-checked acting.
 - The vision tier (model *sees* screenshots) still needs the multimodal seam —
   it's the next additive layer; the text/screen-diff tier works on any model.
 
-## [0.4.0] - 2026-05-31
+### Computer use — browser tier (reactive, text-first, opt-in)
 
-**Computer use** — reactive, text-first, opt-in. The agent can drive a real
+The agent can drive a real
 browser to test apps, pages, and flows (start a dev server in the background,
 then navigate and interact). Built on one principle: the environment observes
 and emits structured events; the model acts on a compact *digest* only when
@@ -112,10 +118,13 @@ something meaningful changes — it is never a continuous watcher.
 - `tool_manifest()` already exposes exact signatures (0.3.2) — the computer
   tools rely on it so the model uses `selector=`/`url=` correctly.
 
-## [0.3.2] - 2026-05-31
+### CLI, autonomy & robustness
 
 A coding-agent UX pass: a persistent Claude-Code-style chat input, a friendlier
-launch story, and verified end-to-end autonomous execution.
+launch story, and verified end-to-end autonomous execution. (Also in this
+release: autonomous "auto" mode + the agentic executor + `delete_file`, and
+real-model tool-call parsing — XML-child args + manifest signatures — so live
+models reliably write multi-line files and call tools.)
 
 ### Added
 - **Persistent chat REPL input (`prompt_toolkit`).** A fresh input line returns

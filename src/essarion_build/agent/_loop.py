@@ -851,7 +851,7 @@ def run_turn(console, session: Session, task: str) -> None:
     _hooks.fire("stop", {"task": task, "files_touched": turn.files_touched}, console)
 
 
-def run_turn_autonomous(console, session: Session, task: str) -> None:
+def run_turn_autonomous(console, session: Session, task: str, *, auto_approve: bool = False):
     """Plan-first, then execute the approved plan autonomously with real tools.
 
     Keeps the same plan→approve gate as `run_turn` (the one human checkpoint),
@@ -859,6 +859,10 @@ def run_turn_autonomous(console, session: Session, task: str) -> None:
     hands the goal to the agentic executor, which creates/edits/deletes files
     and runs commands directly on disk until the goal is done. This is the
     Claude-Code / Codex-style "auto" mode.
+
+    `auto_approve=True` (used by /goal) skips the plan prompt — the user has
+    pre-authorized — so the agent runs end-to-end without stopping. Returns the
+    executor's ExecResult (or None if it bailed before executing).
     """
     from . import _agent_exec
     from ._changes import ChangeLog, current_changelog
@@ -897,7 +901,7 @@ def run_turn_autonomous(console, session: Session, task: str) -> None:
         session.record(turn)
         _ui.render_footer(console, session)
         return
-    choice = _ui.prompt_approve_plan(console)
+    choice = "approve" if auto_approve else _ui.prompt_approve_plan(console)
     if choice == "cancel":
         console.print("[meta]cancelled.[/meta]")
         session.record(turn)
@@ -906,7 +910,7 @@ def run_turn_autonomous(console, session: Session, task: str) -> None:
             cost_usd=turn.cost_usd, budget_usd=session.budget_usd,
         )
         _ui.render_footer(console, session)
-        return
+        return None
     if choice == "edit":
         edited = _ui.prompt_text(
             console,
@@ -999,6 +1003,37 @@ def run_turn_autonomous(console, session: Session, task: str) -> None:
         )
     _ui.render_footer(console, session)
     _hooks.fire("stop", {"task": task, "files_touched": turn.files_touched}, console)
+    return result
+
+
+def run_goal(console, session: Session, goal: str, *, max_rounds: int = 6) -> None:
+    """Work autonomously toward `goal` until it's DONE — no stopping to ask.
+
+    The single autonomous turn already runs to <done> or a step cap; /goal adds
+    two things: it auto-approves the plan (the user pre-authorized by invoking
+    /goal), and if a round stops at the step cap without finishing, it continues
+    automatically — up to `max_rounds` or until the budget runs out. So
+    `/goal run all tests and fix failures` just works until accomplished."""
+    session.autonomous = True
+    console.print(f"[brand]🎯 goal:[/brand] {goal}")
+    console.print("[hint]working autonomously until done — no approval stops. Ctrl-C to halt.[/hint]")
+    current = goal
+    for rnd in range(1, max_rounds + 1):
+        result = run_turn_autonomous(console, session, current, auto_approve=True)
+        if result is None:
+            return
+        if result.stopped_reason == "done":
+            console.print(f"[ok]🎯 goal accomplished in {rnd} round(s).[/ok]")
+            return
+        if result.stopped_reason in ("budget", "error"):
+            console.print(f"[warn]🎯 stopped ({result.stopped_reason}) before the goal was complete.[/warn]")
+            return
+        if session.budget_usd and session.total_cost_usd >= session.budget_usd:
+            console.print("[warn]🎯 budget reached before the goal was complete.[/warn]")
+            return
+        console.print(f"[meta]🎯 round {rnd} hit the step cap; continuing toward the goal…[/meta]")
+        current = f"Continue working until this goal is fully accomplished, then emit <done>:\n{goal}"
+    console.print(f"[warn]🎯 reached the {max_rounds}-round limit; goal may be incomplete.[/warn]")
 
 
 def repl(console, session: Session) -> None:
