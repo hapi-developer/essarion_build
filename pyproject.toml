@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "essarion-build"
-version = "0.3.1"
+dynamic = ["version"]
 description = "BYOK reasoning amplification SDK + CLI coding agent. Plan-first, token-efficient, works with any LLM."
 readme = "README.md"
 license = "Apache-2.0"
@@ -78,6 +78,13 @@ Changelog = "https://github.com/hapi-developer/essarion_build/blob/main/CHANGELO
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+# Single source of truth for the version: src/essarion_build/__init__.py's
+# __version__. setuptools reads it statically (no import), so the built package
+# and the CLI/`__version__` can never drift (which once shipped a 0.3.1 build
+# under a v0.4.0 tag).
+[tool.setuptools.dynamic]
+version = { attr = "essarion_build.__version__" }
 
 [tool.setuptools.package-data]
 essarion_build = ["py.typed", "skills/*.md"]

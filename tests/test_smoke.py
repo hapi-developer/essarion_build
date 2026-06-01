@@ -47,6 +47,21 @@ def test_version() -> None:
     assert essarion_build.__version__ == "0.4.0"
 
 
+def test_version_is_single_sourced() -> None:
+    """The packaged version must come dynamically from __version__, so a release
+    build can never ship a different version than the package reports (a static
+    pyproject `version` once drifted and shipped 0.3.1 under a v0.4.0 tag)."""
+    import pathlib
+    import tomllib
+
+    data = tomllib.loads((pathlib.Path(__file__).resolve().parents[1] / "pyproject.toml").read_text())
+    project = data["project"]
+    assert "version" not in project, "no static version — it must be dynamic from __version__"
+    assert "version" in project.get("dynamic", []), "version must be declared dynamic"
+    attr = data["tool"]["setuptools"]["dynamic"]["version"]["attr"]
+    assert attr == "essarion_build.__version__"
+
+
 def test_imports_clean() -> None:
     assert callable(reason)
     assert callable(generate)
