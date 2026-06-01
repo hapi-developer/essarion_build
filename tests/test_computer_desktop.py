@@ -92,9 +92,12 @@ def _have_real_desktop() -> bool:
     if not os.environ.get("DISPLAY"):
         return False
     try:
-        import Xlib  # noqa: F401
         import mss  # noqa: F401
         from PIL import Image  # noqa: F401
+        from Xlib import display
+        # Verify the X server is actually reachable, not just that $DISPLAY is set.
+        d = display.Display()
+        d.close()
         return True
     except Exception:  # noqa: BLE001
         return False

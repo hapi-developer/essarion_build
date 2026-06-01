@@ -126,6 +126,30 @@ def _run_one(name: str, raw_args: str, allow: set[str]) -> tuple[bool, str]:
     return (not is_err), m.group(3).strip()
 
 
+def _attach_images(feedback: str, session: Session):
+    """If a computer-use screenshot was captured this step AND the model can see
+    images, return multimodal content (text + image blocks) so the model
+    actually sees the screen. Otherwise return the plain feedback string.
+
+    This is the only place the act→observe loop becomes multimodal; everything
+    else stays text, on the cheap text-only path."""
+    try:
+        from ..computer import drain_pending_images, model_supports_vision
+        from .._content import image_block, text_block
+    except Exception:  # noqa: BLE001
+        return feedback
+    images = drain_pending_images()
+    if not images:
+        return feedback
+    if not model_supports_vision(session.provider, session.model):
+        # Captured but the model can't see it; don't send blind, just note it.
+        return feedback + "\n(a screenshot was captured but the current model can't view images.)"
+    content = [text_block(feedback)]
+    for data, media_type in images:
+        content.append(image_block(data, media_type))
+    return content
+
+
 def _narration(text: str) -> str:
     """The model's prose with tool/done tags stripped — shown so the user can
     follow the agent's reasoning, like Claude Code's running narration."""
@@ -225,11 +249,11 @@ def execute(
             result_blocks.append(f'<tool_result name="{name}"{err_attr}>{fed}</tool_result>')
 
         messages.append({"role": "assistant", "content": text})
-        messages.append({
-            "role": "user",
-            "content": "\n".join(result_blocks)
-            + "\n\nContinue. Emit <done>summary</done> when the goal is fully complete.",
-        })
+        feedback = (
+            "\n".join(result_blocks)
+            + "\n\nContinue. Emit <done>summary</done> when the goal is fully complete."
+        )
+        messages.append({"role": "user", "content": _attach_images(feedback, session)})
 
         if done:
             result.summary = done.group(1).strip()

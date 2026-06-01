@@ -30,6 +30,21 @@ _PROVIDER: str = ""
 _MODEL: str = ""
 
 
+# Screenshots captured this step, awaiting attachment to the next model message
+# (only populated on vision-capable models — see *_screenshot).
+_PENDING_IMAGES: list[tuple] = []
+
+
+def drain_pending_images() -> list:
+    """Return and clear screenshots captured since the last drain. The
+    autonomous loop attaches these to the next message so the model can see
+    them. Each item is (bytes, media_type)."""
+    global _PENDING_IMAGES
+    imgs = _PENDING_IMAGES
+    _PENDING_IMAGES = []
+    return imgs
+
+
 def bind_backend(backend: Optional[Backend], *, settle: float = 0.4, provider: str = "", model: str = "") -> None:
     """Bind the active backend for the action tools. `settle` is how long to
     wait for events to arrive after an action (0 for the synchronous FakeBackend
@@ -131,9 +146,10 @@ def browser_screenshot() -> str:
     if not ok:
         return f"(screenshot skipped) {msg}"
     data = be.screenshot()
+    _PENDING_IMAGES.append((data, "image/png"))
     return (
-        f"captured screenshot ({len(data)} bytes) at {be.url()}. "
-        "[vision tier: attach to a multimodal message to inspect it]"
+        f"captured screenshot ({len(data)} bytes) at {be.url()} — the image is "
+        "attached below; inspect it to decide your next action."
     )
 
 
@@ -237,9 +253,10 @@ def desktop_screenshot() -> str:
         return f"(screenshot skipped) {msg}"
     data = be.screenshot()
     w, h = be.screen_size()
+    _PENDING_IMAGES.append((data, "image/png"))
     return (
-        f"captured screen ({len(data)} bytes, {w}x{h}). "
-        "[vision tier: attach to a multimodal message to inspect it]"
+        f"captured screen ({len(data)} bytes, {w}x{h}) — the image is attached "
+        "below; inspect it to decide your next action (coordinates are pixels)."
     )
 
 

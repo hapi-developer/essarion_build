@@ -150,6 +150,7 @@ class _AnthropicProvider:
             AuthenticationError,
             RateLimitError,
         )
+        from ._content import render_anthropic
 
         try:
             response = self._client.messages.create(
@@ -162,7 +163,7 @@ class _AnthropicProvider:
                         "cache_control": {"type": "ephemeral"},
                     }
                 ],
-                messages=messages,
+                messages=[{**m, "content": render_anthropic(m["content"])} for m in messages],
             )
         except AuthenticationError as e:
             raise ProviderAuthError(
@@ -300,12 +301,14 @@ class _OpenAICompatibleProvider:
     def _build_body(
         self, *, system: str, messages: list[dict[str, Any]], max_tokens: int
     ) -> dict[str, Any]:
+        from ._content import render_openai
+
         return {
             "model": self.model,
             "max_tokens": max_tokens,
             "messages": [
                 {"role": "system", "content": system},
-                *messages,
+                *({**m, "content": render_openai(m["content"])} for m in messages),
             ],
         }
 
@@ -446,12 +449,14 @@ class _GeminiProvider:
     def _build_body(
         self, *, system: str, messages: list[dict[str, Any]], max_tokens: int
     ) -> dict[str, Any]:
+        from ._content import render_gemini_parts
+
         contents: list[dict[str, Any]] = []
         for m in messages:
             role = m["role"]
             wire_role = "model" if role == "assistant" else "user"
             contents.append(
-                {"role": wire_role, "parts": [{"text": m["content"]}]}
+                {"role": wire_role, "parts": render_gemini_parts(m["content"])}
             )
         return {
             "systemInstruction": {"parts": [{"text": system}]},
@@ -560,13 +565,15 @@ class _OllamaProvider:
         messages: list[dict[str, Any]],
         max_tokens: int,
     ) -> ProviderResponse:
+        from ._content import content_to_text
+
         body = {
             "model": self.model,
             "stream": False,
             "options": {"num_predict": max_tokens},
             "messages": [
                 {"role": "system", "content": system},
-                *messages,
+                *({**m, "content": content_to_text(m["content"])} for m in messages),
             ],
         }
         last_error: Exception | None = None
