@@ -27,6 +27,7 @@ CommandResult = str  # "continue" | "quit"
 
 _HELP_GROUPS: list[tuple[str, list[str]]] = [
     ("session", ["/whoami", "/history", "/summary", "/save", "/load", "/export", "/clear", "/version", "/quit"]),
+    ("autonomy", ["/goal"]),
     ("planning", ["/ask"]),
     ("workflows", ["/workflows", "/review", "/fix", "/tests", "/refactor", "/docs", "/security", "/perf", "/explain", "/pr"]),
     ("reasoning", ["/effort"]),
@@ -35,7 +36,7 @@ _HELP_GROUPS: list[tuple[str, list[str]]] = [
     ("project & files", ["/cd", "/pwd"]),
     ("changes & verify", ["/diff", "/undo", "/commit", "/verify", "/lint"]),
     ("background", ["/bg"]),
-    ("safety", ["/yolo"]),
+    ("safety", ["/auto", "/computer", "/desktop", "/yolo", "/hooks"]),
     ("help", ["/help"]),
 ]
 
@@ -517,6 +518,131 @@ def _cmd_stream(console: Console, session: Session, args: str) -> CommandResult:
     return "continue"
 
 
+def _cmd_auto(console: Console, session: Session, args: str) -> CommandResult:
+    """Toggle autonomous ("auto") mode.
+
+    When ON, an approved plan is executed autonomously with real disk tools
+    (write/edit/delete/shell) until the goal is done, instead of producing one
+    code blob to apply by hand.
+    """
+    arg = args.strip().lower()
+    if arg == "on":
+        session.autonomous = True
+    elif arg == "off":
+        session.autonomous = False
+    elif arg == "":
+        session.autonomous = not session.autonomous
+    else:
+        console.print("[err]usage: /auto [on|off][/err]")
+        return "continue"
+    state = "ON" if session.autonomous else "OFF"
+    style = "ok" if session.autonomous else "meta"
+    console.print(f"[{style}]autonomous mode: {state}[/{style}]")
+    if session.autonomous:
+        console.print(
+            "[hint]approved plans now run end-to-end on disk "
+            "(write/edit/delete/shell). /undo and /diff still work.[/hint]"
+        )
+    return "continue"
+
+
+def _cmd_goal(console: Console, session: Session, args: str) -> CommandResult:
+    """Pursue a goal autonomously until it's accomplished — no stops.
+
+    Unlike a normal task (which plans, asks you to approve, runs once, and
+    returns), /goal pre-approves the plan and keeps working — continuing past
+    step caps round after round — until the agent emits <done> or the budget
+    runs out. Implies autonomous mode.
+
+    Usage: /goal <what you want accomplished>
+      /goal run all tests and fix any failures
+      /goal build a REST API for todos with tests, then run them
+    """
+    goal = args.strip()
+    if not goal:
+        console.print("[err]usage: /goal <what you want accomplished>[/err]")
+        console.print("[hint]e.g. /goal run all tests and fix failures[/hint]")
+        return "continue"
+    from ._loop import run_goal
+
+    try:
+        run_goal(console, session, goal)
+    except KeyboardInterrupt:
+        console.print("\n[warn]🎯 goal halted.[/warn]")
+    return "continue"
+
+
+def _cmd_computer(console: Console, session: Session, args: str) -> CommandResult:
+    """Toggle computer use — let the agent drive a real browser (reactive, opt-in).
+
+    When ON, the agent gains the browser_* tools and acts→observes→acts on a live
+    page. Implies autonomous mode. Off by default. Needs the [computer] extra
+    (`pip install 'essarion-build[computer]'` + `playwright install chromium`)
+    for the real browser; a vision model is only needed for screenshots.
+    """
+    arg = args.strip().lower()
+    if arg == "on":
+        session.computer_use = True
+    elif arg == "off":
+        session.computer_use = False
+    elif arg == "":
+        session.computer_use = not session.computer_use
+    else:
+        console.print("[err]usage: /computer [on|off][/err]")
+        return "continue"
+    if session.computer_use:
+        session.autonomous = True  # act→observe→act needs the autonomous loop
+        console.print("[ok]computer use: ON[/ok]")
+        from ..computer import check_vision
+
+        ok, msg = check_vision(session.provider, session.model)
+        if not ok:
+            console.print(f"[warn]note:[/warn] {msg}")
+        console.print(
+            "[hint]the agent can now open a browser, click/type, and read a digest "
+            "of what changed. say what you want tested.[/hint]"
+        )
+    else:
+        console.print("[meta]computer use: OFF[/meta]")
+    return "continue"
+
+
+def _cmd_desktop(console: Console, session: Session, args: str) -> CommandResult:
+    """Toggle DESKTOP control — drive the real machine's mouse/keyboard/screen.
+
+    Off by default and gated: it can do anything you can. Implies autonomous.
+    Needs the [desktop] extra (`pip install 'essarion-build[desktop]'`) and a
+    display. Prefer a contained display/VM you trust.
+    """
+    arg = args.strip().lower()
+    if arg == "off":
+        session.desktop_control = False
+        console.print("[meta]desktop control: OFF[/meta]")
+        return "continue"
+    if arg not in ("on", ""):
+        console.print("[err]usage: /desktop [on|off][/err]")
+        return "continue"
+
+    from ._computer import DESKTOP_WARNING
+
+    console.print(f"[err]{DESKTOP_WARNING}[/err]")
+    confirm = _ui.prompt_text(
+        console, "[err]type 'I understand' to enable desktop control[/err]", default=""
+    ).strip().lower()
+    if confirm not in ("i understand", "i understand."):
+        console.print("[meta]desktop control NOT enabled.[/meta]")
+        return "continue"
+    session.desktop_control = True
+    session.autonomous = True
+    console.print("[ok]desktop control: ON[/ok]")
+    from ..computer import check_vision
+
+    ok, msg = check_vision(session.provider, session.model)
+    if not ok:
+        console.print(f"[warn]note:[/warn] {msg}")
+    return "continue"
+
+
 def _cmd_effort(console: Console, session: Session, args: str) -> CommandResult:
     """Show or set the reasoning effort level.
 
@@ -719,6 +845,34 @@ def _cmd_workflows_list(console: Console, session: Session, args: str) -> Comman
         "[hint]invoke via `/<slash> <target>` or by prefixing your task "
         "with `<verb>:` (e.g. `review: src/auth.py`).[/hint]"
     )
+    return "continue"
+
+
+def _cmd_hooks(console: Console, session: Session, args: str) -> CommandResult:
+    """List the lifecycle hooks configured in `.essarion/config.toml`."""
+    from rich.table import Table
+
+    from . import _hooks
+
+    hooks = _hooks.list_hooks()
+    if not hooks:
+        console.print("[meta]no hooks configured.[/meta]")
+        console.print(
+            "[hint]add `[[hooks]]` blocks to .essarion/config.toml — events: "
+            + ", ".join(sorted(_hooks.EVENTS))
+            + ". e.g. format on write:\n"
+            '  [[hooks]]\n  event = "post_tool"\n  matcher = "write_file"\n'
+            '  command = "ruff format ."[/hint]'
+        )
+        return "continue"
+    table = Table(title="hooks", title_style="brand")
+    table.add_column("event", style="key")
+    table.add_column("matcher", style="meta")
+    table.add_column("name", style="meta")
+    table.add_column("command", style="meta")
+    for h in hooks:
+        table.add_row(h.event, h.matcher, h.name or "—", h.command[:60])
+    console.print(table)
     return "continue"
 
 
@@ -1045,10 +1199,15 @@ COMMANDS: dict[str, tuple[Callable, str]] = {
     "/ask": (_cmd_ask, "quick reason() only, no draft phase"),
     "/cost": (_cmd_cost, "show session cost ledger or estimate against a path"),
     "/stream": (_cmd_stream, "toggle streamed draft output (token-by-token)"),
+    "/goal": (_cmd_goal, "pursue a goal autonomously until done — no stops (e.g. /goal run all tests)"),
+    "/auto": (_cmd_auto, "toggle autonomous mode (run approved plans on disk)"),
+    "/computer": (_cmd_computer, "toggle computer use (drive a real browser; opt-in)"),
+    "/desktop": (_cmd_desktop, "toggle DESKTOP control (real mouse/keyboard/screen; gated)"),
     "/effort": (_cmd_effort, "show or set reasoning depth (quick/standard/deep/max/auto)"),
     "/whoami": (_cmd_whoami, "one-screen status: project + model + memory + budget"),
     "/summary": (_cmd_summary, "one-paragraph summary of this session — useful for commits/PRs"),
     "/workflows": (_cmd_workflows_list, "list bundled workflows + their slash shortcuts"),
+    "/hooks": (_cmd_hooks, "list lifecycle hooks from .essarion/config.toml"),
     "/keys": (_cmd_keys, "show which provider API keys are set in the env"),
     "/review": (_workflow_command("review"), "shortcut: workflows.review(<target>)"),
     "/fix": (_workflow_command("fix"), "shortcut: workflows.fix_bug(<target>)"),

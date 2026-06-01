@@ -39,7 +39,7 @@ from ._session import (
     estimate_cost_usd,
 )
 from ._skill_picker import explain_pick, pick_skills
-from . import _tools, _ui
+from . import _tools, _ui, _hooks
 from ._commands import dispatch as dispatch_command
 
 
@@ -700,6 +700,9 @@ def run_turn(console, session: Session, task: str) -> None:
     from .. import approx_generate_calls
     from ._pricing import estimate_turn_cost_usd, format_cost
 
+    if _hooks.fire("user_prompt", {"prompt": task}, console).blocked:
+        console.print("[warn]task blocked by a user_prompt hook.[/warn]")
+        return
     cwd = Path(session.cwd)
     ctx, picks, why = _build_context(task, session=session, cwd=cwd, console=console)
     if picks:
@@ -845,17 +848,204 @@ def run_turn(console, session: Session, task: str) -> None:
             f"[cost.over]budget exceeded by ${session.total_cost_usd - session.budget_usd:.4f}[/cost.over]"
         )
     _ui.render_footer(console, session)
+    _hooks.fire("stop", {"task": task, "files_touched": turn.files_touched}, console)
+
+
+def run_turn_autonomous(console, session: Session, task: str, *, auto_approve: bool = False):
+    """Plan-first, then execute the approved plan autonomously with real tools.
+
+    Keeps the same plan→approve gate as `run_turn` (the one human checkpoint),
+    but instead of emitting a single code blob for the user to save by hand, it
+    hands the goal to the agentic executor, which creates/edits/deletes files
+    and runs commands directly on disk until the goal is done. This is the
+    Claude-Code / Codex-style "auto" mode.
+
+    `auto_approve=True` (used by /goal) skips the plan prompt — the user has
+    pre-authorized — so the agent runs end-to-end without stopping. Returns the
+    executor's ExecResult (or None if it bailed before executing).
+    """
+    from . import _agent_exec
+    from ._changes import ChangeLog, current_changelog
+
+    if _hooks.fire("user_prompt", {"prompt": task}, console).blocked:
+        console.print("[warn]task blocked by a user_prompt hook.[/warn]")
+        return
+    cwd = Path(session.cwd)
+    ctx, picks, why = _build_context(task, session=session, cwd=cwd, console=console)
+    if picks:
+        _ui.render_skills_picked(console, picks, why)
+
+    turn = TaskTurn(task=task, skills_used=picks)
+
+    # Workflow-prefixed shortcut ("review: …") still routes to workflows.
+    if _maybe_handle_workflow(task, console, session, ctx, turn):
+        session.record(turn)
+        _ui.render_usage_line(
+            console, label="turn usage", usage_total=turn.usage.total_tokens,
+            cost_usd=turn.cost_usd, budget_usd=session.budget_usd,
+        )
+        _ui.render_footer(console, session)
+        return
+
+    # 1. PLAN phase.
+    r = _run_plan_phase(console, session, ctx, task, turn)
+    if r is None:
+        session.record(turn)
+        return
+    turn.plan = r.plan
+    turn.tradeoffs = r.tradeoffs
+    turn.verdict = r.verdict
+
+    # 2. Budget check + plan approval (the one gate we keep in auto mode).
+    if not _check_budget(console, session, turn):
+        session.record(turn)
+        _ui.render_footer(console, session)
+        return
+    choice = "approve" if auto_approve else _ui.prompt_approve_plan(console)
+    if choice == "cancel":
+        console.print("[meta]cancelled.[/meta]")
+        session.record(turn)
+        _ui.render_usage_line(
+            console, label="turn usage", usage_total=turn.usage.total_tokens,
+            cost_usd=turn.cost_usd, budget_usd=session.budget_usd,
+        )
+        _ui.render_footer(console, session)
+        return None
+    if choice == "edit":
+        edited = _ui.prompt_text(
+            console,
+            "[brand]rewrite the plan (paste your version)[/brand]",
+            default=r.plan,
+        )
+        if edited:
+            ctx.add_note(
+                "The user has revised the plan. Use this as the authoritative plan:\n\n"
+                + edited
+            )
+            turn.plan = edited
+
+    # 3. AUTONOMOUS EXECUTION — real disk writes/edits/deletes + shell.
+    _ui.render_phase_header(console, "build")
+    log = current_changelog()
+    start = len(log.entries)
+
+    # Computer use (opt-in): extend the toolset with the browser_* and/or
+    # desktop_* tools and launch backends for this turn. Never on by default.
+    from . import _computer
+
+    allow = set(_agent_exec.AUTONOMOUS_ALLOW)
+    extra_parts: list[str] = []
+    backend = None
+    desktop_backend = None
+    if _computer.computer_use_active(session, task):
+        from ..computer import COMPUTER_TOOL_NAMES
+
+        try:
+            backend = _computer.start_computer_session(session)
+            allow |= COMPUTER_TOOL_NAMES
+            extra_parts.append(_computer.COMPUTER_PROTOCOL)
+            console.print("[brand]🖥  computer use enabled[/brand] [meta](browser tools active)[/meta]")
+        except Exception as e:  # noqa: BLE001 - surface, don't crash the turn
+            console.print(f"[warn]computer use requested but the browser backend could not start:[/warn] {e}")
+    elif _computer.suggests_desktop(task) and not _computer.desktop_active(session):
+        console.print(
+            "[hint]this looks like a desktop task. Desktop control is off by default "
+            "(it drives your real machine) — enable it with [key]/desktop on[/key] or "
+            "[key]--desktop[/key], then ask again.[/hint]"
+        )
+    if _computer.desktop_active(session):
+        from ..computer import DESKTOP_TOOL_NAMES
+
+        try:
+            desktop_backend = _computer.start_desktop_session(session)
+            allow |= DESKTOP_TOOL_NAMES
+            extra_parts.append(_computer.DESKTOP_PROTOCOL)
+            console.print("[err]🖥  DESKTOP CONTROL enabled[/err] [meta](real mouse/keyboard/screen)[/meta]")
+        except Exception as e:  # noqa: BLE001
+            console.print(f"[warn]desktop control requested but could not start:[/warn] {e}")
+
+    try:
+        result = _agent_exec.execute(
+            console, session, task, ctx,
+            make_runtime=_make_runtime, turn=turn, plan=turn.plan,
+            allow=allow, extra_system="\n\n".join(extra_parts),
+        )
+    finally:
+        if backend is not None:
+            _computer.stop_computer_session(backend)
+        if desktop_backend is not None:
+            _computer.stop_desktop_session(desktop_backend)
+    for p in result.files_touched:
+        if p not in turn.files_touched:
+            turn.files_touched.append(p)
+
+    # 4. Net diff of just this turn's on-disk changes — a reviewable summary.
+    new_entries = log.entries[start:]
+    if new_entries:
+        try:
+            net = ChangeLog(cwd=log.cwd, entries=new_entries).diff()
+        except Exception:  # noqa: BLE001
+            net = ""
+        if net.strip():
+            _ui.render_diff(console, net)
+
+    # 5. Auto-verify + suggestions + footer.
+    _maybe_auto_verify(console, session, turn)
+    _suggest_next_actions(console, session, turn)
+    session.record(turn)
+    _ui.render_usage_line(
+        console, label="turn usage", usage_total=turn.usage.total_tokens,
+        cost_usd=turn.cost_usd, budget_usd=session.budget_usd,
+    )
+    if session.budget_usd and session.total_cost_usd > session.budget_usd:
+        console.print(
+            f"[cost.over]budget exceeded by ${session.total_cost_usd - session.budget_usd:.4f}[/cost.over]"
+        )
+    _ui.render_footer(console, session)
+    _hooks.fire("stop", {"task": task, "files_touched": turn.files_touched}, console)
+    return result
+
+
+def run_goal(console, session: Session, goal: str, *, max_rounds: int = 6) -> None:
+    """Work autonomously toward `goal` until it's DONE — no stopping to ask.
+
+    The single autonomous turn already runs to <done> or a step cap; /goal adds
+    two things: it auto-approves the plan (the user pre-authorized by invoking
+    /goal), and if a round stops at the step cap without finishing, it continues
+    automatically — up to `max_rounds` or until the budget runs out. So
+    `/goal run all tests and fix failures` just works until accomplished."""
+    session.autonomous = True
+    console.print(f"[brand]🎯 goal:[/brand] {goal}")
+    console.print("[hint]working autonomously until done — no approval stops. Ctrl-C to halt.[/hint]")
+    current = goal
+    for rnd in range(1, max_rounds + 1):
+        result = run_turn_autonomous(console, session, current, auto_approve=True)
+        if result is None:
+            return
+        if result.stopped_reason == "done":
+            console.print(f"[ok]🎯 goal accomplished in {rnd} round(s).[/ok]")
+            return
+        if result.stopped_reason in ("budget", "error"):
+            console.print(f"[warn]🎯 stopped ({result.stopped_reason}) before the goal was complete.[/warn]")
+            return
+        if session.budget_usd and session.total_cost_usd >= session.budget_usd:
+            console.print("[warn]🎯 budget reached before the goal was complete.[/warn]")
+            return
+        console.print(f"[meta]🎯 round {rnd} hit the step cap; continuing toward the goal…[/meta]")
+        current = f"Continue working until this goal is fully accomplished, then emit <done>:\n{goal}"
+    console.print(f"[warn]🎯 reached the {max_rounds}-round limit; goal may be incomplete.[/warn]")
 
 
 def repl(console, session: Session) -> None:
     """The main interactive loop."""
     _tools.bind_tools(session.cwd)
+    _hooks.fire("session_start", {"session_id": session.id, "cwd": session.cwd}, console)
     while True:
         # Show any background-task completion notices first so the user
         # sees long-running commands finish between turns.
         _ui.drain_background_notices(console)
         try:
-            line = _ui.prompt_input(console)
+            line = _ui.prompt_input(console, session)
         except KeyboardInterrupt:
             line = "/quit"
         if not line:
@@ -877,5 +1067,10 @@ def repl(console, session: Session) -> None:
             return
         if cmd_result is not None:
             continue
-        # Not a slash command → treat as a task.
-        run_turn(console, session, line)
+        # Not a slash command → treat as a task. In autonomous ("auto") mode the
+        # approved plan is executed end-to-end on disk; otherwise it's the
+        # plan-first, hand-applied flow.
+        if getattr(session, "autonomous", False):
+            run_turn_autonomous(console, session, line)
+        else:
+            run_turn(console, session, line)

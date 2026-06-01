@@ -7,6 +7,151 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-06-01
+
+The agentic release — everything since the published 0.3.1. Autonomous "auto"
+mode, lifecycle hooks, a Claude-Code-style CLI, real-model tool-call robustness,
+the `/goal` no-stop command, and **computer use** (browser + desktop, reactive
+and expectation-checked, with the model able to *see* the screen).
+
+- **`/goal <task>`** — pursue a goal autonomously until it's accomplished:
+  pre-approves the plan and keeps working across step caps, round after round,
+  until the agent emits `<done>` or the budget runs out. No stopping to ask.
+  e.g. `/goal run all tests and fix any failures`.
+
+### Computer use — vision, cross-platform, OCR, cloud
+- **Vision seam (the model SEES).** Message content can be a list of neutral
+  blocks (`text_block` / `image_block`); each provider renders them to its
+  native multimodal shape (OpenAI/OpenRouter, Anthropic, Gemini), and a plain
+  string still flows through unchanged. `browser_screenshot` / `desktop_screenshot`
+  now capture the image and the autonomous loop attaches it to the next message —
+  but only on vision-capable models (otherwise it notes the capture, never sends
+  blind). Verified live: a real model read text straight from image pixels.
+- **Cross-platform desktop input.** Input lives behind a per-OS `InputDriver`:
+  `X11Input` (Linux/XTEST, the CI-tested reference), `QuartzInput` (macOS,
+  CoreGraphics), `WindowsInput` (Windows, ctypes SendInput). Capture (mss) and
+  the screen-diff were already cross-platform. (macOS/Windows drivers are
+  written from the documented APIs but not exercised by this Linux CI.)
+- **Desktop OCR.** With `pytesseract` + a `tesseract` binary, the desktop tier
+  reads on-screen text, so text expectations ("'Welcome back' appears") resolve
+  instead of being "unclear".
+
+### Cloud (essarion_build_cloud)
+- The worker can drive the headless-browser tier via `ESSARION_COMPUTER_USE=1`
+  (desktop control is intentionally not offered in a remote container).
+
+### Verified
+- 579 passing; real X11 under Xvfb (move/capture/diff + OCR + full agent loop);
+  live vision read-through; cloud worker driving a real headless browser.
+
+### Computer use — desktop tier (control the real machine)
+
+Computer use extends from the browser to
+the *real machine*: the agent can move the mouse, type, press keys, scroll, and
+screenshot the actual screen, observing changes via screen diffing. Same
+reactive spine (observe→digest→act), same expectation-checked acting.
+
+### Added
+- **`DesktopBackend`** — real X11 control: input via the XTEST extension (the
+  mechanism xdotool uses), screen capture via mss, structured so macOS (Quartz)
+  and Windows (SendInput) backends slot in behind the same interface.
+- **Screen-diff observer (`ScreenDiffer`)** — the universal floor: downsample
+  each frame to a coarse colour grid, diff consecutive frames, and report the
+  changed regions (with pixel centres) as events. Pure grid math — no display
+  needed to test it — works on any app/OS including canvas/Electron.
+- **`desktop_*` tools** — `desktop_move/click/type/key/scroll/observe/`
+  `screenshot`, each act→observe→digest→`expect=` like the browser tools.
+  Expectations now also understand "the screen changes" (useful where there's
+  no text to match).
+- **`FakeDesktopBackend`** and the screen-diff core are dependency-free and
+  importable for building your own desktop automation on the SDK.
+
+### Safety
+- Desktop control is **explicit-opt-in only** (`--desktop` / `/desktop`) — never
+  activated from phrasing, because it can do anything you can. `/desktop`
+  requires typing an acknowledgement. The protocol treats on-screen text as
+  **untrusted** (prompt-injection) and forbids destructive/credential/purchase
+  actions unless unambiguously requested. Run it on a contained display/VM.
+
+### Verified
+- Real X11 under Xvfb: absolute pointer move reflected by the server, real
+  screenshot, and the autonomous executor driving a real interactive app — the
+  agent's click flipped a real button from "Submit" to "CLICKED!", confirmed by
+  the screen-diff and the expectation check. 568 passed (12 new).
+
+### Notes
+- Desktop deps live in the new `[desktop]` extra (python-xlib, mss, Pillow).
+- The vision tier (model *sees* screenshots) still needs the multimodal seam —
+  it's the next additive layer; the text/screen-diff tier works on any model.
+
+### Computer use — browser tier (reactive, text-first, opt-in)
+
+The agent can drive a real
+browser to test apps, pages, and flows (start a dev server in the background,
+then navigate and interact). Built on one principle: the environment observes
+and emits structured events; the model acts on a compact *digest* only when
+something meaningful changes — it is never a continuous watcher.
+
+### Added
+- **`essarion_build.computer`** — an importable toolkit (like the reasoning
+  loop): `reduce_events`/`Digest` (the reducer — the heart), `BufferedObserver`,
+  `Backend`/`FakeBackend`/`PlaywrightBackend`, the `browser_*` action tools,
+  and `parse_expectation`/`check_expectation`. Build your own reactive browser
+  tools on top of it.
+- **Reactive browser tier** — a CDP/Playwright tap (console, network failures,
+  navigation, dialogs, DOM mutations via a page-side queue) normalized and
+  reduced into a budget-sized digest returned by every action. Catches the
+  transient changes a screenshot-only agent misses.
+- **Expectation-checked acting** ("reason deep, act fast") — every action takes
+  an optional `expect=` one-line prediction; the environment verifies it against
+  the digest + page text deterministically (no extra model call) and prepends
+  ✓/✗. Forces the model to reason about consequences in the same tokens it acts
+  with, and only re-engages it when reality diverges.
+- **Opt-in gating** — off by default. Enable via `--computer-use`, `/computer`,
+  or an unambiguous request ("use the computer", "open a browser and …"). The
+  `[computer]` extra installs Playwright; the reducer/observer/expectations are
+  pure-Python and dependency-free.
+- **Vision check** — `browser_screenshot` (and `/computer`) detect when the
+  model can't see images and prompt you to switch instead of sending blind.
+
+### Changed
+- `tool_manifest()` already exposes exact signatures (0.3.2) — the computer
+  tools rely on it so the model uses `selector=`/`url=` correctly.
+
+### CLI, autonomy & robustness
+
+A coding-agent UX pass: a persistent Claude-Code-style chat input, a friendlier
+launch story, and verified end-to-end autonomous execution. (Also in this
+release: autonomous "auto" mode + the agentic executor + `delete_file`, and
+real-model tool-call parsing — XML-child args + manifest signatures — so live
+models reliably write multi-line files and call tools.)
+
+### Added
+- **Persistent chat REPL input (`prompt_toolkit`).** A fresh input line returns
+  after every turn — no need to re-invoke `essarion` or pass `--task`. Includes
+  command history that survives across turns and sessions (↑/↓), history-based
+  autosuggestions, slash-command completion, a placeholder, and a hint toolbar.
+  Falls back to a plain Rich prompt for pipes/CI or if prompt_toolkit is absent.
+- **Lifecycle hooks** (`pre_tool`/`post_tool`/`user_prompt`/`session_start`/
+  `stop`) configured in `.essarion/config.toml`; `/hooks` lists them.
+- **Redesigned welcome screen**: block wordmark with a `>` prompt and a
+  "Tips for getting started" box.
+
+### Changed
+- **Bare `essarion` *and* `essarion-build` now launch the REPL.** Both console
+  scripts share one dispatcher; subcommands still work, free text / `--task`
+  runs one-shot.
+
+### Fixed
+- **Multi-word tasks no longer truncate to the first word.** `--task please
+  code a website` (unquoted) and bare `essarion fix the failing test` are
+  joined into the full task instead of erroring on "unrecognized arguments".
+
+### Verified
+- The autonomous loop genuinely **writes code, runs the tests, observes the real
+  failure, fixes it, re-runs, and finishes** — proven by a reactive test that
+  branches on live subprocess output (`tests/test_agent_exec_verify.py`).
+
 ## [0.3.1] - 2026-05-29
 
 Usability fixes for the built-in test stub, from a v0.3.0 field report. No

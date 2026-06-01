@@ -64,6 +64,48 @@ def test_main_runs_agent_non_interactive_with_task_arg(
     assert called["model"] == "stub-model"
 
 
+def test_task_text_joins_multiword_task_flag() -> None:
+    """`--task please code a website` (unquoted) is joined, not truncated to
+    'please' — the exact bug from 0.3.1."""
+    parser = agent_main.build_agent_parser()
+    ns = parser.parse_args(["--task", "please", "code", "a", "website"])
+    assert agent_main._task_text(ns) == "please code a website"
+
+
+def test_task_text_joins_bare_positional_words() -> None:
+    """`essarion fix the failing test` runs one-shot with no --task, no quotes."""
+    parser = agent_main.build_agent_parser()
+    ns = parser.parse_args(["fix", "the", "failing", "test"])
+    assert agent_main._task_text(ns) == "fix the failing test"
+
+
+def test_no_task_means_repl() -> None:
+    parser = agent_main.build_agent_parser()
+    assert agent_main._task_text(parser.parse_args([])) == ""
+
+
+def test_bare_invocation_opens_the_repl(monkeypatch, tmp_path) -> None:
+    """Bare `essarion` / `essarion-build` (no task) launches the chat REPL."""
+    opened: dict[str, bool] = {}
+    monkeypatch.setattr(agent_main, "repl", lambda console, session: opened.setdefault("repl", True))
+    monkeypatch.setattr(agent_main, "show_banner", lambda *a, **k: None)
+    rc = agent_main.run_agent(["--cwd", str(tmp_path), "--provider", "stub", "--model", "m"])
+    assert rc == 0
+    assert opened.get("repl") is True
+
+
+def test_essarion_build_bare_routes_to_repl(monkeypatch, tmp_path) -> None:
+    """The unified dispatcher (what the `essarion-build` script now calls) opens
+    the REPL when given no subcommand."""
+    opened: dict[str, bool] = {}
+    monkeypatch.setattr(agent_main, "repl", lambda console, session: opened.setdefault("repl", True))
+    monkeypatch.setattr(agent_main, "show_banner", lambda *a, **k: None)
+    monkeypatch.chdir(tmp_path)
+    rc = agent_main.main_or_subcommand([])
+    assert rc == 0
+    assert opened.get("repl") is True
+
+
 def test_cmd_init_creates_skeleton(tmp_path, capsys) -> None:
     """`essarion init <path>` creates the .essarion/ skeleton."""
     rc = agent_main.cmd_init([str(tmp_path)])

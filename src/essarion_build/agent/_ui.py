@@ -19,7 +19,7 @@ from rich.table import Table
 from rich.text import Text
 
 from ._session import Session
-from ._theme import BANNER, ESSARION_THEME, TAGLINE
+from ._theme import BANNER, BANNER_COMPACT, ESSARION_THEME, TAGLINE, TIPS
 
 
 def make_console() -> Console:
@@ -39,8 +39,24 @@ def show_banner(
     `project` (optional) is an `agent._project.Project`; when present we
     label the cwd row with the marker that identified the project root.
     """
-    console.print(BANNER)
+    # Big block wordmark, or a compact one on very narrow terminals.
+    console.print(BANNER if console.width >= 46 else BANNER_COMPACT)
     console.print(TAGLINE)
+    console.print()
+    # "Tips for getting started" box (Gemini-style welcome).
+    tips_body = Group(*[
+        Text.from_markup(f"[brand.dim]{i}.[/brand.dim] {tip}")
+        for i, tip in enumerate(TIPS, start=1)
+    ])
+    console.print(
+        Panel(
+            tips_body,
+            title="[brand]Tips for getting started[/brand]",
+            title_align="left",
+            border_style="brand.dim",
+            padding=(1, 2),
+        )
+    )
     console.print()
     table = Table.grid(padding=(0, 2))
     table.add_column(style="meta", justify="right")
@@ -251,12 +267,17 @@ def drain_background_notices(console: Console) -> None:
 
 # ---------- prompts ----------
 
-def prompt_input(console: Console) -> str:
-    """The user-input prompt at the top of each turn."""
-    try:
-        return Prompt.ask("[you]you[/you]", console=console).strip()
-    except (EOFError, KeyboardInterrupt):
-        return "/quit"
+def prompt_input(console: Console, session: Session | None = None) -> str:
+    """The user-input prompt at the top of each turn.
+
+    Delegates to the Claude-Code-style input (prompt_toolkit when available,
+    Rich prompt otherwise). A fresh line is read every turn, so multi-word
+    tasks like "please code a website" are captured whole — no `--task`,
+    no shell quoting, no "only the first word" parsing.
+    """
+    from ._input import read_prompt
+
+    return read_prompt(console, session)
 
 
 def prompt_approve_plan(console: Console) -> str:

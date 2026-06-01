@@ -94,6 +94,17 @@ def test_run_shell_timeout(tmp_path) -> None:
     assert "timed out" in out
 
 
+def test_run_shell_supports_shell_operators(tmp_path) -> None:
+    """Redirection, pipes, and && must work — models write them constantly."""
+    _tools.bind_tools(tmp_path)
+    _tools.run_shell("echo 'hello world' > greeting.txt")
+    assert (tmp_path / "greeting.txt").read_text().strip() == "hello world"
+    # pipe + &&
+    out = _tools.run_shell("printf 'a\\nb\\nc\\n' | wc -l && echo done")
+    assert "3" in out and "done" in out
+    assert "[exit 0]" in out
+
+
 def test_register_all_wires_sdk_tools() -> None:
     """All built-in agent tools are registered with the SDK's tool surface."""
     from essarion_build import tools as sdk_tools

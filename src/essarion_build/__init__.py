@@ -66,6 +66,8 @@ from .tools import (
     tool_manifest,
     unregister_tool,
 )
+from ._content import image_block, text_block  # multimodal message blocks
+from . import computer  # reactive computer-use toolkit (browser tier; opt-in)
 from ._streaming import ReasoningEvent, stream_generate, stream_reason
 from ._telemetry import TelemetryCallback, configure_telemetry
 from .exceptions import (
@@ -81,9 +83,11 @@ from .exceptions import (
     ReasoningFormatError,
 )
 
-__version__ = "0.3.1"
+__version__ = "0.4.0"
 
 __all__ = [
+    # Subpackages
+    "computer",
     # Core types
     "Context",
     "Diff",
@@ -155,6 +159,9 @@ __all__ = [
     "list_tools",
     "run_tools_in_plan",
     "tool_manifest",
+    # Multimodal content (vision)
+    "image_block",
+    "text_block",
     # Stub provider (for users' tests)
     "StubProvider",
     "AsyncStubProvider",

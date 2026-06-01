@@ -32,6 +32,10 @@ dependencies = [
     "pydantic>=2",
     "httpx>=0.27",
     "rich>=13.7",
+    # Claude-Code-style REPL input (history, autosuggest, slash completion).
+    # Imported lazily with a Rich fallback, so a missing install degrades
+    # gracefully rather than breaking the CLI.
+    "prompt_toolkit>=3.0.18",
 ]
 
 [project.optional-dependencies]
@@ -39,13 +43,32 @@ test = [
     "pytest>=8",
     "pytest-asyncio>=0.24",
 ]
+# Computer use — browser tier. The reducer/observer/expectations are pure-Python
+# and dependency-free; only the live PlaywrightBackend needs this extra (plus a
+# one-time `playwright install chromium`).
+computer = [
+    "playwright>=1.40",
+]
+# Desktop tier — control the real machine's mouse/keyboard/screen. python-xlib
+# (X11 input via XTEST), mss (screen capture), Pillow (screen diff). The
+# screen-diff observer itself is pure-Python; these power the live backend.
+desktop = [
+    "python-xlib>=0.33; sys_platform == 'linux'",
+    "mss>=9",
+    "Pillow>=9",
+    # OCR for reading on-screen text (text expectations on the desktop tier).
+    # Needs the system `tesseract` binary (e.g. apt install tesseract-ocr).
+    "pytesseract>=0.3",
+]
 
 [project.scripts]
-# Existing power-user CLI (subcommands: skills, providers, reason, generate, …).
-essarion-build = "essarion_build.cli:main"
-# Top-level coding-agent UX. Bare `essarion` launches the REPL; `essarion <subcmd>`
-# falls through to the same subcommands as `essarion-build`.
+# Both entry points share one dispatcher: bare `essarion` / `essarion-build`
+# launch the interactive chat REPL; `<subcmd>` (skills, providers, reason,
+# generate, …) falls through to the power-user CLI; `--task`/free text runs
+# one-shot. `essarion` is what we advertise; `essarion-build` is the same so
+# users who reach for the package name land in the same place.
 essarion = "essarion_build.agent.main:main_or_subcommand"
+essarion-build = "essarion_build.agent.main:main_or_subcommand"
 
 [project.urls]
 Homepage = "https://essarion.com"
