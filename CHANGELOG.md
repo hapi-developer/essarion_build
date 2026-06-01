@@ -26,6 +26,8 @@ autonomous run. All zero-dependency (standard library only).
 - **Code-intelligence tools.** `repo_map` (ranked overview), `outline <file>`
   (a file's symbols + signatures), and `find_symbol <name>` (go-to-definition +
   find-references across the repo) — far cheaper and more precise than grep.
+  Also surfaced as slash commands for humans: `/map`, `/outline <file>`,
+  `/symbol <name>`.
 - **`edit_symbol` — AST-anchored edits.** Replace a whole function or class *by
   name* (`Class.method` supported), located via `ast` rather than fuzzy text
   matching. Refuses to write if the result wouldn't parse, so a structural edit

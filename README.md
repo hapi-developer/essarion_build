@@ -235,6 +235,14 @@ Type `/help` inside the agent for the categorized view. The headline ones:
 | `/save` / `/load` | persist / list saved sessions |
 | `/quit` | exit (saves; kills non-detached bg tasks) |
 
+**code intelligence**
+
+| Command | Description |
+|---|---|
+| `/map [paths]` | the ranked repo map the agent sees each turn (optionally biased toward `paths`) |
+| `/outline <file>` | one file's symbols + signatures |
+| `/symbol <name>` | where a symbol is defined and referenced (go-to-def + find-refs) |
+
 **planning & workflows**
 
 | Command | Description |
