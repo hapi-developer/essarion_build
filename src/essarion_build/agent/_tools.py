@@ -199,11 +199,54 @@ def write_file(path: str, content: str) -> str:
     return _hooks.after_tool("write_file", {"path": path}, f"wrote {len(content):,} bytes to {path}")
 
 
+def _fuzzy_replace(body: str, old: str, new: str) -> str | None:
+    """Locate `old` in `body` tolerating leading/trailing-whitespace differences
+    (the common LLM mismatch) and return the patched body — or None if there
+    isn't exactly one fuzzy match. Tries trailing-whitespace tolerance first
+    (preserves indentation), then full strip tolerance (re-indenting `new` to the
+    matched block)."""
+    body_lines = body.split("\n")
+    old_lines = old.split("\n")
+    if old_lines and old_lines[-1] == "":
+        old_lines = old_lines[:-1]
+    new_lines = new.split("\n")
+    if new_lines and new_lines[-1] == "":
+        new_lines = new_lines[:-1]
+    n = len(old_lines)
+    if n == 0:
+        return None
+
+    def _indent(s: str) -> str:
+        return s[: len(s) - len(s.lstrip())]
+
+    # 1) Trailing-whitespace tolerant — leading indentation must still match.
+    target = [x.rstrip() for x in old_lines]
+    hits = [i for i in range(len(body_lines) - n + 1)
+            if [body_lines[i + j].rstrip() for j in range(n)] == target]
+    if len(hits) == 1:
+        i = hits[0]
+        return "\n".join(body_lines[:i] + new_lines + body_lines[i + n:])
+
+    # 2) Indentation tolerant — re-indent `new` to align with the matched block.
+    target = [x.strip() for x in old_lines]
+    hits = [i for i in range(len(body_lines) - n + 1)
+            if [body_lines[i + j].strip() for j in range(n)] == target]
+    if len(hits) == 1:
+        i = hits[0]
+        body_indent, old_indent = _indent(body_lines[i]), _indent(old_lines[0])
+        pad = body_indent[len(old_indent):] if body_indent.startswith(old_indent) else ""
+        reindented = [(pad + ln) if ln.strip() else ln for ln in new_lines]
+        return "\n".join(body_lines[:i] + reindented + body_lines[i + n:])
+    return None
+
+
 def apply_diff(path: str, old: str, new: str) -> str:
     """Replace the *unique* occurrence of `old` with `new` in `path`.
 
     Refuses if `old` doesn't appear or appears more than once — this is
-    the same safety the SDK's Edit tool surface uses. The full new file
+    the same safety the SDK's Edit tool surface uses. If `old` isn't found
+    verbatim, falls back to a whitespace/indentation-tolerant match so a small
+    formatting drift in the snippet doesn't waste a step. The full new file
     is recorded in the change log for `/undo`.
     """
     p = _resolve(path)
@@ -212,13 +255,21 @@ def apply_diff(path: str, old: str, new: str) -> str:
     _hooks.before_tool("apply_diff", {"path": path})
     body = p.read_text(encoding="utf-8")
     count = body.count(old)
-    if count == 0:
-        raise ValueError(f"old text not found in {path}")
-    if count > 1:
+    if count == 1:
+        new_body = body.replace(old, new)
+        how = "applied 1-occurrence patch to"
+    elif count > 1:
         raise ValueError(
             f"old text appears {count} times in {path}; tighten the snippet"
         )
-    new_body = body.replace(old, new)
+    else:
+        fuzzy = _fuzzy_replace(body, old, new)
+        if fuzzy is None:
+            raise ValueError(
+                f"old text not found in {path}; read the file and copy the exact "
+                "lines to replace (indentation is matched flexibly)"
+            )
+        new_body, how = fuzzy, "applied patch (whitespace-tolerant match) to"
     try:
         _changes.current_changelog().record(
             path, after=new_body, sandbox_root=_SANDBOX_ROOT
@@ -226,7 +277,7 @@ def apply_diff(path: str, old: str, new: str) -> str:
     except Exception:  # noqa: BLE001
         pass
     p.write_text(new_body, encoding="utf-8")
-    return _hooks.after_tool("apply_diff", {"path": path}, f"applied 1-occurrence patch to {path}")
+    return _hooks.after_tool("apply_diff", {"path": path}, f"{how} {path}")
 
 
 def delete_file(path: str) -> str:
@@ -258,9 +309,15 @@ def run_shell(cmd: str, timeout: int = 30) -> str:
     For long-running commands (dev servers, test suites, installs) use
     `start_background` instead — it returns immediately with a task id.
     """
+    import re
     import shutil
+    import sys
 
     _hooks.before_tool("run_shell", {"command": cmd})
+    # `open <x>` is macOS; on Linux the equivalent is `xdg-open`. Models reach
+    # for `open` out of habit — translate it so it doesn't just fail.
+    if sys.platform.startswith("linux") and shutil.which("xdg-open"):
+        cmd = re.sub(r"^(\s*)open(\s+)", r"\1xdg-open\2", cmd)
     shell_exe = shutil.which("bash") or None  # None → subprocess uses /bin/sh
     try:
         result = subprocess.run(

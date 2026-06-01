@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.6] - 2026-06-01
+
+Output-polish release: a calmer, more honest autonomous run.
+
 ### Changed
 
 - **Quieter todo checklist.** The live checklist now renders only when it
@@ -17,6 +21,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Edits show a diffstat, not the code.** A successful `apply_diff` now renders
   a compact `+added −removed` line-count summary instead of dumping the changed
   code; use `/diff` to view the actual change.
+- **Quieter reasoning narration.** On a step that also takes an action, the
+  model's "I'll now…" prose is shown as a single dim, truncated lead-in instead
+  of a bright multi-line block, so the action lines dominate. A prose-only step
+  (a direct answer) is still shown in full.
+
+### Fixed
+
+- **Resilient `apply_diff`.** When the snippet doesn't match verbatim, the edit
+  now falls back to a whitespace/indentation-tolerant match (re-indenting the
+  replacement to align with the matched block) instead of failing with "old
+  text not found" and burning a step.
+- **Failed commands no longer show a green ✓.** A shell command that runs but
+  exits nonzero is now marked ✗ and recorded as failed.
+- **`open <file>` works on Linux** — it's translated to `xdg-open` (a macOS-ism
+  models reach for) when that's available.
 
 ## [0.3.5] - 2026-06-01
 

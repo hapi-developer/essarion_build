@@ -265,7 +265,8 @@ def _target_for(name: str, args: dict[str, Any]) -> str:
     if name == "list_dir":
         return str(args.get("path", "."))
     if name in {"grep", "find_files", "glob"}:
-        return str(args.get("pattern", ""))
+        pat = str(args.get("pattern", ""))
+        return pat if len(pat) <= 48 else pat[:47].rstrip() + "…"
     if name == "run_shell":
         return str(args.get("cmd", args.get("command", "")))
     if name == "start_background":
@@ -437,11 +438,18 @@ def execute(
         calls = _parse_calls(text)
         done = _DONE_RE.search(text)
 
-        # Answer-only step (no tool calls) → it's a reply/summary to the user, so
-        # show it in full. A step that also calls tools → just a short lead-in.
-        narration = _narration(text, limit=4000 if not calls else 320)
-        if narration:
-            console.print(f"[agent]{narration}[/agent]")
+        # A prose-only step (no tool calls) is a reply/summary to the user → show
+        # it in full, in the agent voice. A step that also acts → keep the prose
+        # to a short, dim lead-in so the action lines clearly dominate.
+        if calls:
+            lead = _narration(text, limit=160)
+            if lead:
+                console.print(f"[hint]{lead}[/hint]")
+            narration = ""
+        else:
+            narration = _narration(text, limit=4000)
+            if narration:
+                console.print(f"[agent]{narration}[/agent]")
 
         if not calls:
             if done:
@@ -510,21 +518,29 @@ def execute(
             existed = name == "write_file" and (Path(session.cwd) / str(args.get("path", ""))).exists()
             ok, body = _run_one(name, raw_args, allow)
 
+            # A shell command that ran but exited nonzero is a failure, even
+            # though the tool call itself didn't raise — don't show a green ✓.
+            shown_ok = ok
+            if ok and name in {"run_shell", "start_background"}:
+                m = re.search(r"\[exit (\d+)\]", body)
+                if m and m.group(1) != "0":
+                    shown_ok = False
+
             verb = _verb_for(name, existed)
             target = _target_for(name, args)
             diffstat = _diff_stat(args) if (name == "apply_diff" and ok) else None
-            show_output = (not ok) or name in _SHOW_OUTPUT or name.startswith(("browser_", "desktop_"))
+            show_output = (not shown_ok) or name in _SHOW_OUTPUT or name.startswith(("browser_", "desktop_"))
             _ui.render_action(
-                console, verb=verb, target=target, ok=ok, diffstat=diffstat,
+                console, verb=verb, target=target, ok=shown_ok, diffstat=diffstat,
                 output=body if show_output else "",
             )
-            actions_log.append(f"{verb} {target}".strip() + ("" if ok else " (failed)"))
+            actions_log.append(f"{verb} {target}".strip() + ("" if shown_ok else " (failed)"))
             if ok and name in _MUTATING:
                 path = args.get("path")
                 if path and path not in touched:
                     touched.append(path)
             fed = body if len(body) <= _RESULT_FEEDBACK_CAP else body[:_RESULT_FEEDBACK_CAP] + "\n…(truncated)"
-            err_attr = "" if ok else ' error="true"'
+            err_attr = "" if shown_ok else ' error="true"'
             result_blocks.append(f'<tool_result name="{name}"{err_attr}>{fed}</tool_result>')
 
         messages.append({"role": "assistant", "content": text})

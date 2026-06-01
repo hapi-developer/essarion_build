@@ -350,6 +350,21 @@ def test_diff_stat_counts() -> None:
     assert _diff_stat({"old": "", "new": ""}) == (0, 0)
 
 
+def test_execute_marks_nonzero_shell_exit_as_failed(monkeypatch, console, session) -> None:
+    """A command that runs but exits nonzero shows ✗, not a misleading ✓."""
+    monkeypatch.setattr("essarion_build.agent._tools._AUTO_APPROVE", False)
+    stub = StubProvider(responses=[
+        _call("run_shell", cmd="exit 7"),
+        "<done>ran it</done>",
+    ], auto_respond=False)
+    _agent_exec.execute(
+        console, session, "run a failing command", Context(),
+        make_runtime=lambda p, m: LiteRuntime(stub),
+    )
+    out = console.file.getvalue()
+    assert "✗" in out and "Ran" in out
+
+
 def test_render_action_redacts_secrets(console) -> None:
     """Keys/tokens are stripped from rendered tool output."""
     key = "sk-or-v1-abcdef0123456789abcdef0123"

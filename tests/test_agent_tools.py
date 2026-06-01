@@ -7,6 +7,29 @@ import pytest
 from essarion_build.agent import _tools
 
 
+def test_apply_diff_fuzzy_trailing_whitespace(tmp_path) -> None:
+    (tmp_path / "a.py").write_text("def f():\n    return 1\n")
+    _tools.bind_tools(tmp_path)
+    # `old` carries trailing whitespace the file lacks → exact miss, fuzzy hit.
+    _tools.apply_diff("a.py", "    return 1   ", "    return 2")
+    assert (tmp_path / "a.py").read_text() == "def f():\n    return 2\n"
+
+
+def test_apply_diff_fuzzy_reindents_to_match(tmp_path) -> None:
+    (tmp_path / "c.py").write_text("class C:\n        def m(self):\n            pass\n")
+    _tools.bind_tools(tmp_path)
+    # Snippet has no leading indent; the fuzzy match re-indents `new` to align.
+    _tools.apply_diff("c.py", "def m(self):\n    pass", "def m(self):\n    return 42")
+    assert (tmp_path / "c.py").read_text() == "class C:\n        def m(self):\n            return 42\n"
+
+
+def test_apply_diff_still_refuses_truly_absent(tmp_path) -> None:
+    (tmp_path / "d.py").write_text("alpha\nbeta\n")
+    _tools.bind_tools(tmp_path)
+    with pytest.raises(ValueError, match="not found"):
+        _tools.apply_diff("d.py", "gamma\ndelta", "x")
+
+
 def test_read_file_within_sandbox(tmp_path) -> None:
     (tmp_path / "a.py").write_text("print(1)\n")
     _tools.bind_tools(tmp_path)
