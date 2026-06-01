@@ -103,6 +103,44 @@ def _have_real_desktop() -> bool:
         return False
 
 
+def _have_ocr() -> bool:
+    try:
+        import pytesseract
+        pytesseract.get_tesseract_version()
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+@pytest.mark.skipif(not _have_real_desktop() or not _have_ocr(), reason="no display / no OCR engine")
+def test_desktop_text_content_ocr_enables_text_expectations() -> None:
+    """With OCR available, the desktop tier can read on-screen text — so text
+    expectations like \"'Welcome back' appears\" become checkable, not 'unclear'."""
+    from PIL import Image, ImageDraw, ImageFont
+
+    from essarion_build.computer import DesktopBackend, bind_desktop, desktop_observe
+    from essarion_build.computer.tools import unregister_desktop_tools
+
+    be = DesktopBackend.launch()
+    try:
+        img = Image.new("RGB", (640, 200), "white")
+        d = ImageDraw.Draw(img)
+        d.text((30, 80), "Welcome back, user", fill="black", font=ImageFont.load_default(size=36))
+        be._grab = lambda: img  # type: ignore  # feed a known frame to OCR
+
+        assert "Welcome back" in be.text_content()
+
+        # And the expectation check uses it: an "appears" claim now resolves.
+        from essarion_build.computer import check_expectation, parse_expectation, reduce_events
+        exp = parse_expectation("a 'Welcome back' message appears")
+        res = check_expectation(exp, reduce_events([]), page_text=be.text_content())
+        assert res.met
+    finally:
+        unregister_desktop_tools()
+        bind_desktop(None)
+        be.close()
+
+
 @pytest.mark.skipif(not _have_real_desktop(), reason="no DISPLAY / desktop stack")
 def test_real_desktop_end_to_end() -> None:
     """One real display, one backend: verify the primitives (move/capture/diff)

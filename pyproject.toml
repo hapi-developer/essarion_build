@@ -56,6 +56,9 @@ desktop = [
     "python-xlib>=0.33; sys_platform == 'linux'",
     "mss>=9",
     "Pillow>=9",
+    # OCR for reading on-screen text (text expectations on the desktop tier).
+    # Needs the system `tesseract` binary (e.g. apt install tesseract-ocr).
+    "pytesseract>=0.3",
 ]
 
 [project.scripts]
