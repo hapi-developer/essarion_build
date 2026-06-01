@@ -126,3 +126,10 @@ def test_session_defaults_to_autonomous() -> None:
     end-to-end on disk in a loop, rather than the plan→approve→hand-apply flow."""
     s = Session(id="x", cwd=".", provider="stub", model="m")
     assert s.autonomous is True
+
+
+def test_session_defaults_to_no_budget_cap() -> None:
+    """No spending cap by default — we just meter tokens + cost. A cap is opt-in
+    via `/budget` or --budget."""
+    s = Session(id="x", cwd=".", provider="stub", model="m")
+    assert s.budget_usd == 0.0

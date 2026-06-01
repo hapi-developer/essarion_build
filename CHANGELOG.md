@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Interactive `ask_user` tool.** Mid-task the agent can ask you multiple-choice
+  questions (Claude-Code style): up to 4 options plus an auto-added "Other (type
+  your own)", and several questions in a row. Answer by number or type your own.
+  Non-blocking in pipes/CI — with no TTY it proceeds with sensible defaults.
+- **Conversation memory in the autonomous loop.** Every turn now carries a recap
+  of prior turns (task → what was built → files touched) and still-running
+  background processes, so follow-ups like "what did you just do?" or "how do I
+  reach the server?" are answered from memory instead of groping the filesystem.
+
+### Changed
+
+- **No spending cap by default.** The budget is off (`0`) unless you set one —
+  the status line just meters tokens + cost (no "`/ $1.00`"). `/budget` shows
+  spend and (interactively) prompts for a cap; `/budget <amount>` or `--budget`
+  sets one; `/budget off` clears it.
+- **Collapsed, Claude-Code-style output.** Each action is one compact, faded line
+  — `Created index.html`, `Edited styles.css` (+ a small diff), `Ran npm test`
+  (+ a short output tail) — instead of dumping full file contents and a result
+  panel per call. The end-of-turn full diff is replaced by a one-line change
+  summary (`/diff` for the detail).
+- **Planning is silent in autonomous mode** — computed internally and fed to the
+  executor, with no plan/tradeoffs/verdict wall and no "build" header. A question
+  (as opposed to a build task) is answered directly in prose, without running
+  tools. Long answers are shown in full (no 400-char clip).
+- Refreshed the banner tagline/tips to reflect autonomous-by-default.
+
+### Fixed
+
+- The agent no longer invents placeholder targets (e.g. running `curl`/`ping`
+  against `example.com`) to answer a question — it answers from context, or asks.
+
 ## [0.3.4] - 2026-06-01
 
 The autonomous release. The CLI agent is now **agentic by default** — like

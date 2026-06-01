@@ -121,7 +121,7 @@ def test_agent_writes_code_runs_tests_fixes_and_reruns(console, session, tmp_pat
 
     # Both a failing and a passing test run were really executed and rendered.
     out = console.file.getvalue()
-    assert "run_shell" in out
+    assert "Ran" in out  # the compact run_shell action line
     assert "FAILED" in out, "no real failing run was observed"
     assert "OK" in out, "no real passing run was observed"
 

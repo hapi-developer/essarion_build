@@ -313,9 +313,15 @@ def _looks_like_reject(verdict: str) -> bool:
 
 
 def _run_plan_phase(
-    console, session: Session, ctx: Context, task: str, turn: TaskTurn
+    console, session: Session, ctx: Context, task: str, turn: TaskTurn,
+    *, quiet: bool = False,
 ) -> Reasoning | None:
-    """Run reason() and render the plan panel. Returns the Reasoning or None on err.
+    """Run reason() and (unless `quiet`) render the plan panel. Returns the
+    Reasoning or None on err.
+
+    `quiet=True` is used by the autonomous turn: the plan is still computed and
+    fed to the executor, but nothing is rendered — planning happens internally,
+    Claude-Code style, instead of showing a wall of plan/tradeoffs/verdict.
 
     If the model emits read-only `<tool_call>` tags inline (read_file,
     grep, list_dir, find_files, glob), the agent executes them, folds
@@ -330,7 +336,8 @@ def _run_plan_phase(
         tool_results_summary,
     )
 
-    _ui.render_phase_header(console, "plan")
+    if not quiet:
+        _ui.render_phase_header(console, "plan")
 
     def _do_reason() -> Reasoning | None:
         with console.status(
@@ -370,10 +377,11 @@ def _run_plan_phase(
         if not results:
             break
         n = fold_into_context(ctx, results)
-        console.print(
-            f"[meta]ran[/meta] [brand]{len(results)}[/brand] [meta]tool call(s) inline; "
-            f"folded {n} result(s) into context, re-planning…[/meta]"
-        )
+        if not quiet:
+            console.print(
+                f"[meta]ran[/meta] [brand]{len(results)}[/brand] [meta]tool call(s) inline; "
+                f"folded {n} result(s) into context, re-planning…[/meta]"
+            )
         rounds += 1
         r = _do_reason()
         if r is None:
@@ -381,12 +389,13 @@ def _run_plan_phase(
     _record_phase_usage(turn, session, r.usage)
     if getattr(r, "effort", ""):
         turn.effort = r.effort
-        if session.effort == "auto":
+        if not quiet and session.effort == "auto":
             console.print(
                 f"[meta]reasoning depth: [/meta][phase.plan]{r.effort}[/phase.plan]"
                 f"[meta] (auto-sized for this task)[/meta]"
             )
-    _ui.render_plan(console, r.plan, r.tradeoffs, r.verdict)
+    if not quiet:
+        _ui.render_plan(console, r.plan, r.tradeoffs, r.verdict)
     return r
 
 
@@ -851,6 +860,30 @@ def run_turn(console, session: Session, task: str) -> None:
     _hooks.fire("stop", {"task": task, "files_touched": turn.files_touched}, console)
 
 
+def _classify_changes(entries) -> tuple[list[str], list[str], list[str]]:
+    """Collapse a turn's change-log entries (per path) into the net
+    (created, edited, deleted) path lists for the compact change summary."""
+    first_before: dict[str, str | None] = {}
+    last_kind: dict[str, str] = {}
+    order: list[str] = []
+    for e in entries:
+        if e.path not in first_before:
+            first_before[e.path] = e.before
+            order.append(e.path)
+        last_kind[e.path] = e.kind
+    created: list[str] = []
+    edited: list[str] = []
+    deleted: list[str] = []
+    for path in order:
+        if last_kind[path] == "delete":
+            deleted.append(path)
+        elif first_before[path] is None:
+            created.append(path)
+        else:
+            edited.append(path)
+    return created, edited, deleted
+
+
 def run_turn_autonomous(console, session: Session, task: str):
     """Plan internally, then build the whole task autonomously with real tools.
 
@@ -889,8 +922,9 @@ def run_turn_autonomous(console, session: Session, task: str):
         _ui.render_footer(console, session)
         return
 
-    # 1. PLAN phase.
-    r = _run_plan_phase(console, session, ctx, task, turn)
+    # 1. PLAN phase — computed silently (quiet) and fed to the executor as
+    #    context. No wall of plan/tradeoffs/verdict; planning is internal.
+    r = _run_plan_phase(console, session, ctx, task, turn, quiet=True)
     if r is None:
         session.record(turn)
         return
@@ -906,8 +940,9 @@ def run_turn_autonomous(console, session: Session, task: str):
         _ui.render_footer(console, session)
         return None
 
-    # 3. AUTONOMOUS EXECUTION — real disk writes/edits/deletes + shell.
-    _ui.render_phase_header(console, "build")
+    # 3. AUTONOMOUS EXECUTION — real disk writes/edits/deletes + shell. The
+    #    executor narrates and prints one compact line per action; no header
+    #    needed (and Q&A turns shouldn't be labelled "build").
     log = current_changelog()
     start = len(log.entries)
 
@@ -960,16 +995,16 @@ def run_turn_autonomous(console, session: Session, task: str):
     for p in result.files_touched:
         if p not in turn.files_touched:
             turn.files_touched.append(p)
+    # Remember what we did, for the next turn's conversation memory.
+    if result.summary:
+        turn.summary = result.summary
 
-    # 4. Net diff of just this turn's on-disk changes — a reviewable summary.
+    # 4. Compact, collapsed summary of this turn's on-disk changes (created /
+    #    edited / deleted counts + names). The full diff is one `/diff` away.
     new_entries = log.entries[start:]
     if new_entries:
-        try:
-            net = ChangeLog(cwd=log.cwd, entries=new_entries).diff()
-        except Exception:  # noqa: BLE001
-            net = ""
-        if net.strip():
-            _ui.render_diff(console, net)
+        created, edited, deleted = _classify_changes(new_entries)
+        _ui.render_change_summary(console, created, edited, deleted)
 
     # 5. Auto-verify + suggestions + footer.
     _maybe_auto_verify(console, session, turn)

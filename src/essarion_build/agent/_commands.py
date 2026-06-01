@@ -95,20 +95,56 @@ def _cmd_clear(console: Console, session: Session, args: str) -> CommandResult:
     return "continue"
 
 
+def _set_budget(console: Console, session: Session, raw: str) -> bool:
+    """Parse `raw` as a USD cap and apply it. 'off'/'none'/'0' clears the cap.
+    Returns True if it parsed (and was applied), False if it wasn't a number."""
+    arg = raw.strip().lstrip("$").lower()
+    if arg in {"off", "none", "clear"}:
+        session.budget_usd = 0.0
+        console.print("[ok]budget cap removed — metering cost only.[/ok]")
+        return True
+    try:
+        session.budget_usd = max(0.0, float(arg))
+    except ValueError:
+        return False
+    if session.budget_usd > 0:
+        console.print(f"[ok]budget cap set to ${session.budget_usd:.2f}[/ok]")
+    else:
+        console.print("[ok]budget cap removed — metering cost only.[/ok]")
+    return True
+
+
 def _cmd_budget(console: Console, session: Session, args: str) -> CommandResult:
+    """Show spend, or set a spending cap. No cap by default — `/budget` with no
+    argument shows the cost so far and (interactively) prompts for a cap."""
     if args.strip():
-        try:
-            session.budget_usd = float(args.strip().lstrip("$"))
-            console.print(f"[ok]budget set to ${session.budget_usd:.2f}[/ok]")
-        except ValueError:
-            console.print("[err]usage: /budget [amount-in-usd][/err]")
+        if not _set_budget(console, session, args):
+            console.print("[err]usage: /budget [amount-in-usd | off][/err]")
         return "continue"
-    pct = session.budget_used_pct() * 100.0
-    style = "cost.under" if pct < 60 else ("cost.warn" if pct < 90 else "cost.over")
-    console.print(
-        f"[meta]used[/meta] [{style}]${session.total_cost_usd:.4f}[/{style}]"
-        f"[meta] / ${session.budget_usd:.2f}  ({pct:.1f}%)[/meta]"
-    )
+    # No argument: show current spend.
+    if session.budget_usd and session.budget_usd > 0:
+        pct = session.budget_used_pct() * 100.0
+        style = "cost.under" if pct < 60 else ("cost.warn" if pct < 90 else "cost.over")
+        console.print(
+            f"[meta]spent[/meta] [{style}]${session.total_cost_usd:.4f}[/{style}]"
+            f"[meta] / ${session.budget_usd:.2f}  ({pct:.1f}%)[/meta]"
+        )
+    else:
+        console.print(
+            f"[meta]spent[/meta] [cost.under]${session.total_cost_usd:.4f}[/cost.under]"
+            f"[meta]  (no cap set)[/meta]"
+        )
+    # Then prompt for a cap — but only when interactive, so pipes/tests/CI don't
+    # block waiting on stdin.
+    import sys
+
+    if getattr(sys.stdin, "isatty", lambda: False)() and getattr(sys.stdout, "isatty", lambda: False)():
+        entered = _ui.prompt_text(
+            console, "[brand]set a budget cap in USD (blank = leave as-is)[/brand]"
+        )
+        if entered.strip():
+            if not _set_budget(console, session, entered):
+                console.print("[warn]not a number — budget unchanged.[/warn]")
     return "continue"
 
 
@@ -1184,7 +1220,7 @@ COMMANDS: dict[str, tuple[Callable, str]] = {
     "/help": (_cmd_help, "show this list"),
     "/quit": (_cmd_quit, "exit the agent"),
     "/clear": (_cmd_clear, "clear the screen"),
-    "/budget": (_cmd_budget, "show or set the session budget (USD)"),
+    "/budget": (_cmd_budget, "show cost so far, or set a spending cap (no cap by default)"),
     "/model": (_cmd_model, "show or set the provider/model"),
     "/escalate": (_cmd_escalate, "set or clear the escalation model"),
     "/skills": (_cmd_skills, "list skills or set picker mode (auto|all|none)"),

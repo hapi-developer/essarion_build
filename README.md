@@ -42,28 +42,20 @@ $ essarion
 
 you: set up a codebase for a Next.js app with a todo API and tests
 
-  skills: containers dx caching scope_discipline error_handling
-  auto-loaded: (none)
+  skills  containers dx caching scope_discipline error_handling
 
-  ── plan ──
-  ┌──────────────────────────────────────────────────────────────┐
-  │ plan                                                         │
-  │  1. Scaffold package.json, tsconfig, next.config             │
-  │  2. Add app/ routes + an /api/todos route handler            │
-  │  3. Add a tests/ suite and wire the test script              │
-  └──────────────────────────────────────────────────────────────┘
-
-  ── build ──                       (no approval stop — it just works)
-  → write_file(path='package.json')              ✓
-  → write_file(path='tsconfig.json')             ✓
-  → write_file(path='app/page.tsx')              ✓
-  → write_file(path='app/api/todos/route.ts')    ✓
-  → write_file(path='tests/todos.test.ts')       ✓
-  → run_shell(cmd='npm install')                 ✓
-  → run_shell(cmd='npm test')                    ✓  2 passing
+  ✓ Created  package.json
+  ✓ Created  tsconfig.json
+  ✓ Created  app/page.tsx
+  ✓ Created  app/api/todos/route.ts
+  ✓ Created  tests/todos.test.ts
+  ✓ Ran  npm install
+  ✓ Ran  npm test
+      Tests:  2 passed
   ✓ Next.js app scaffolded with a todo API and a passing test suite
 
-  diff ▸ 5 files created · turn usage 12,403 tokens · $0.004 of $1.00
+  changes: 5 created  package.json, tsconfig.json, app/page.tsx, … · /diff to view
+  turn usage 12,403 tokens · $0.0042
   ────────────────────────────────────────────────────────────
 ```
 
@@ -92,11 +84,16 @@ classic **plan → approve → hand-apply** flow:
    `--plan-first`) gives you the plan + verdict BEFORE any code is paid for,
    so you can edit, reject, or send it back. Most agents force one mode; this
    gives you both.
-3. **Live token-budget meter + projected cost.** Every session has a
-   configurable USD budget. Before each turn the agent prints a projected
-   cost based on your current context size. After each turn you see the
-   actual spend. `/cost <path>` lets you estimate against a hypothetical
-   context before sending it.
+3. **Collapsed, readable output + memory.** Each action is one compact,
+   faded line (`Created index.html`, `Edited styles.css` + a small diff,
+   `Ran npm test` + a short tail) — not a wall of file dumps. The agent
+   also remembers the conversation, so "what did you just do?" or "how do I
+   reach the server?" are answered from memory, and it can **ask you
+   multiple-choice questions** mid-task when something's genuinely ambiguous.
+3. **Token meter, no forced budget.** Every turn shows tokens + cost; there's
+   **no spending cap by default**. Set one any time with `/budget` (it'll
+   prompt) or `--budget 5`, and `/cost <path>` estimates a hypothetical
+   context before you send it.
 3. **Smart skill selection.** The 54 bundled skills aren't all loaded
    every turn — a fast keyword picker chooses the 3-5 most relevant
    ones. Big context savings on every call.

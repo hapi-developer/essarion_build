@@ -72,10 +72,10 @@ def test_execute_creates_edits_deletes_and_runs(console, session, tmp_path) -> N
     assert "junk.txt" in result.files_touched
     assert "created fib.py" in result.summary
 
-    # Each action surfaced as a tool run.
+    # Each action surfaced as a compact, faded action line (verb, not tool name).
     out = console.file.getvalue()
-    for tool in ("write_file", "apply_diff", "delete_file", "run_shell"):
-        assert tool in out, f"missing tool_run for {tool}"
+    for verb in ("Created", "Edited", "Deleted", "Ran"):
+        assert verb in out, f"missing compact action line: {verb}"
 
 
 def test_execute_respects_step_cap(console, session) -> None:
@@ -142,7 +142,9 @@ def test_run_turn_autonomous_end_to_end(monkeypatch, console, session, tmp_path)
     assert "greet.py" in last.files_touched and "cli.py" in last.files_touched
 
     out = console.file.getvalue()
-    assert "build" in out  # the ── build ── phase header rendered
+    # The compact action lines surfaced the work (no verbose tool dumps / panels).
+    assert "Created" in out and "greet.py" in out
+    assert last.summary  # the executor's <done> summary was stored for memory
 
 
 def test_autonomous_turn_does_not_prompt_for_approval(
@@ -184,6 +186,69 @@ def test_execute_nudges_past_a_prose_only_step(console, session, tmp_path) -> No
     )
     assert (tmp_path / "made.txt").is_file()
     assert result.stopped_reason == "done"
+
+
+def test_execute_ask_user_prompts_and_feeds_back(monkeypatch, console, session, tmp_path) -> None:
+    """The agent can ask the user a multiple-choice question mid-task; the chosen
+    answer is fed back and the loop continues to completion."""
+    captured: dict = {}
+
+    def fake_ask(c, spec, *, input_fn=None):
+        captured["spec"] = spec
+        return "Q: Which framework?\nA: React"
+
+    monkeypatch.setattr(_ui, "ask_user_questions", fake_ask)
+    stub = StubProvider(
+        responses=[
+            _call("ask_user", questions=[{"question": "Which framework?", "options": ["React", "Vue"]}]),
+            _call("write_file", path="app.jsx", content="// React app\n"),
+            "<done>scaffolded a React app</done>",
+        ],
+        auto_respond=False,
+    )
+    result = _agent_exec.execute(
+        console, session, "scaffold a frontend", Context(),
+        make_runtime=lambda p, m: LiteRuntime(stub),
+    )
+    assert captured["spec"]["questions"][0]["question"] == "Which framework?"
+    assert (tmp_path / "app.jsx").is_file()  # it acted on the answer
+    assert result.stopped_reason == "done"
+
+
+def test_ask_user_questions_select_and_other(console) -> None:
+    """ask_user UI: a number selects an option; the 'Other' number takes typed text."""
+    spec = {"questions": [
+        {"question": "Pick a color", "header": "Color", "options": ["Red", "Green", "Blue"]},
+        {"question": "Pick a size", "options": ["S", "M"]},
+    ]}
+    # Q1: "2" → Green. Q2 has 2 options so "3" is Other → next input "Large".
+    inputs = iter(["2", "3", "Large"])
+    out = _ui.ask_user_questions(console, spec, input_fn=lambda prompt: next(inputs))
+    assert "A: Green" in out
+    assert "A: Large" in out
+
+
+def test_ask_user_questions_non_interactive_does_not_block(console) -> None:
+    """With no TTY and no injected input_fn, ask_user never blocks — it returns a
+    note telling the model to proceed."""
+    out = _ui.ask_user_questions(console, {"question": "x?", "options": ["a", "b"]})
+    assert "no interactive user" in out.lower()
+
+
+def test_executor_carries_conversation_memory(session) -> None:
+    """Prior turns + running background processes show up in the executor's
+    system prompt, so follow-up questions are answered from memory."""
+    session.history.append(
+        TaskTurn(task="code a website", summary="Built a 4-page static site",
+                 files_touched=["index.html", "styles.css"])
+    )
+    mem = _agent_exec._conversation_memory(session)
+    assert "code a website" in mem
+    assert "Built a 4-page static site" in mem
+    assert "index.html" in mem
+    # And it's actually woven into the system prompt.
+    system = _agent_exec._system_prompt(Context(), memory=mem)
+    assert "CONVERSATION SO FAR" in system
 
 
 def test_execute_gives_up_after_repeated_no_action(console, session) -> None:

@@ -42,8 +42,9 @@ def _add_agent_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--budget",
         type=float,
-        default=1.00,
-        help="session budget in USD (default: 1.00)",
+        default=0.0,
+        help="spending cap in USD (default: 0 = no cap, just meter cost). "
+        "Set one to halt the turn before it crosses the cap.",
     )
     parser.add_argument(
         "--provider",
@@ -161,7 +162,7 @@ def _apply_project_config(
     if args.escalate is None and "escalate_model" in agent_cfg:
         args.escalate = agent_cfg["escalate_model"] or None
     # `budget` and `skills` use argparse defaults so check against those.
-    if args.budget == 1.00 and "budget" in agent_cfg:
+    if args.budget == 0.0 and "budget" in agent_cfg:
         try:
             args.budget = float(agent_cfg["budget"])
         except (TypeError, ValueError):
