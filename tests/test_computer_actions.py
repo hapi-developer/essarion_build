@@ -54,7 +54,7 @@ def test_navigate_then_click_reports_reactive_digest(_bound) -> None:
     assert "login form" in out
 
     out2 = browser_click(selector="#login")
-    assert "url: https://app.test/dashboard" in out2
+    assert "context: https://app.test/dashboard" in out2
     assert "Logout" in out2
 
 

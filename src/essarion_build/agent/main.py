@@ -85,6 +85,14 @@ def _add_agent_args(parser: argparse.ArgumentParser) -> None:
         "opt-in). Implies --autonomous. Off by default.",
     )
     parser.add_argument(
+        "--desktop",
+        dest="desktop_control",
+        action="store_true",
+        help="enable DESKTOP control: drive the real machine's mouse/keyboard/"
+        "screen (opt-in, off by default; implies --autonomous). Use a contained "
+        "display/VM you trust.",
+    )
+    parser.add_argument(
         "--resume",
         help="resume a prior session by id (see /load inside the REPL)",
     )
@@ -189,6 +197,9 @@ def _initial_session(args: argparse.Namespace, project: Project) -> Session:
         if getattr(args, "computer_use", False):
             s.computer_use = True
             s.autonomous = True  # computer use needs the act→observe→act loop
+        if getattr(args, "desktop_control", False):
+            s.desktop_control = True
+            s.autonomous = True
         return s
 
     # New session, anchored to the project root.
@@ -203,8 +214,11 @@ def _initial_session(args: argparse.Namespace, project: Project) -> Session:
         budget_usd=args.budget,
         skills_mode=args.skills,
         effort=args.effort,
-        autonomous=getattr(args, "autonomous", False) or getattr(args, "computer_use", False),
+        autonomous=getattr(args, "autonomous", False)
+        or getattr(args, "computer_use", False)
+        or getattr(args, "desktop_control", False),
         computer_use=getattr(args, "computer_use", False),
+        desktop_control=getattr(args, "desktop_control", False),
     )
 
 

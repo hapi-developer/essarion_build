@@ -35,7 +35,7 @@ _HELP_GROUPS: list[tuple[str, list[str]]] = [
     ("project & files", ["/cd", "/pwd"]),
     ("changes & verify", ["/diff", "/undo", "/commit", "/verify", "/lint"]),
     ("background", ["/bg"]),
-    ("safety", ["/auto", "/computer", "/yolo", "/hooks"]),
+    ("safety", ["/auto", "/computer", "/desktop", "/yolo", "/hooks"]),
     ("help", ["/help"]),
 ]
 
@@ -577,6 +577,42 @@ def _cmd_computer(console: Console, session: Session, args: str) -> CommandResul
         )
     else:
         console.print("[meta]computer use: OFF[/meta]")
+    return "continue"
+
+
+def _cmd_desktop(console: Console, session: Session, args: str) -> CommandResult:
+    """Toggle DESKTOP control — drive the real machine's mouse/keyboard/screen.
+
+    Off by default and gated: it can do anything you can. Implies autonomous.
+    Needs the [desktop] extra (`pip install 'essarion-build[desktop]'`) and a
+    display. Prefer a contained display/VM you trust.
+    """
+    arg = args.strip().lower()
+    if arg == "off":
+        session.desktop_control = False
+        console.print("[meta]desktop control: OFF[/meta]")
+        return "continue"
+    if arg not in ("on", ""):
+        console.print("[err]usage: /desktop [on|off][/err]")
+        return "continue"
+
+    from ._computer import DESKTOP_WARNING
+
+    console.print(f"[err]{DESKTOP_WARNING}[/err]")
+    confirm = _ui.prompt_text(
+        console, "[err]type 'I understand' to enable desktop control[/err]", default=""
+    ).strip().lower()
+    if confirm not in ("i understand", "i understand."):
+        console.print("[meta]desktop control NOT enabled.[/meta]")
+        return "continue"
+    session.desktop_control = True
+    session.autonomous = True
+    console.print("[ok]desktop control: ON[/ok]")
+    from ..computer import check_vision
+
+    ok, msg = check_vision(session.provider, session.model)
+    if not ok:
+        console.print(f"[warn]note:[/warn] {msg}")
     return "continue"
 
 
@@ -1138,6 +1174,7 @@ COMMANDS: dict[str, tuple[Callable, str]] = {
     "/stream": (_cmd_stream, "toggle streamed draft output (token-by-token)"),
     "/auto": (_cmd_auto, "toggle autonomous mode (run approved plans on disk)"),
     "/computer": (_cmd_computer, "toggle computer use (drive a real browser; opt-in)"),
+    "/desktop": (_cmd_desktop, "toggle DESKTOP control (real mouse/keyboard/screen; gated)"),
     "/effort": (_cmd_effort, "show or set reasoning depth (quick/standard/deep/max/auto)"),
     "/whoami": (_cmd_whoami, "one-screen status: project + model + memory + budget"),
     "/summary": (_cmd_summary, "one-paragraph summary of this session — useful for commits/PRs"),

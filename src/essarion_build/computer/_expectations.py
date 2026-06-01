@@ -34,10 +34,13 @@ class Expectation:
     text_appears: list[str] = field(default_factory=list)
     text_absent: list[str] = field(default_factory=list)
     expects_no_errors: bool = False
+    expects_change: bool = False  # "the screen/page changes/updates" — useful when
+    # there's no text to match (e.g. the desktop screen-diff tier without OCR).
 
     def is_checkable(self) -> bool:
         return bool(
-            self.url_contains or self.text_appears or self.text_absent or self.expects_no_errors
+            self.url_contains or self.text_appears or self.text_absent
+            or self.expects_no_errors or self.expects_change
         )
 
 
@@ -61,6 +64,12 @@ _URL_RE2 = re.compile(r"\b(?:on|at|stays?\s+on|remain\w*\s+(?:on|at))\s+(/[\w\-.
 _QUOTED_RE = re.compile(r"[\"'“”‘’]([^\"'“”‘’]{2,60})[\"'“”‘’]")
 _ABSENT_RE = re.compile(r"\b(?:no longer|disappear\w*|hidden|removed|gone|without)\b", re.I)
 _NOERR_RE = re.compile(r"\bno (?:console )?errors?\b|\bwithout errors?\b|error[- ]free", re.I)
+_CHANGE_RE = re.compile(
+    r"\b(?:screen|page|view|ui|window|content|something|anything)\s+(?:changes?|updates?|"
+    r"refreshes?|re-?renders?|redraws?)\b|\b(?:changes?|updates?)\s+appear|"
+    r"\bsomething\s+happens?\b",
+    re.I,
+)
 
 
 def parse_expectation(raw: str) -> Expectation:
@@ -88,6 +97,8 @@ def parse_expectation(raw: str) -> Expectation:
 
     if _NOERR_RE.search(low):
         exp.expects_no_errors = True
+    if _CHANGE_RE.search(raw):
+        exp.expects_change = True
     return exp
 
 
@@ -123,6 +134,10 @@ def check_expectation(
     if exp.expects_no_errors and digest.had_errors:
         ok = False
         reasons.append("expected no errors, but errors were observed: " + "; ".join(digest.highlights[:3]))
+
+    if exp.expects_change and digest.n_events == 0:
+        ok = False
+        reasons.append("expected something to change, but nothing was observed")
 
     if ok:
         return ExpectationResult(verdict="met", reasons=["expectation satisfied"])

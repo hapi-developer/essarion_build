@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-06-01
+
+**Computer use — desktop tier.** Computer use now extends from the browser to
+the *real machine*: the agent can move the mouse, type, press keys, scroll, and
+screenshot the actual screen, observing changes via screen diffing. Same
+reactive spine (observe→digest→act), same expectation-checked acting.
+
+### Added
+- **`DesktopBackend`** — real X11 control: input via the XTEST extension (the
+  mechanism xdotool uses), screen capture via mss, structured so macOS (Quartz)
+  and Windows (SendInput) backends slot in behind the same interface.
+- **Screen-diff observer (`ScreenDiffer`)** — the universal floor: downsample
+  each frame to a coarse colour grid, diff consecutive frames, and report the
+  changed regions (with pixel centres) as events. Pure grid math — no display
+  needed to test it — works on any app/OS including canvas/Electron.
+- **`desktop_*` tools** — `desktop_move/click/type/key/scroll/observe/`
+  `screenshot`, each act→observe→digest→`expect=` like the browser tools.
+  Expectations now also understand "the screen changes" (useful where there's
+  no text to match).
+- **`FakeDesktopBackend`** and the screen-diff core are dependency-free and
+  importable for building your own desktop automation on the SDK.
+
+### Safety
+- Desktop control is **explicit-opt-in only** (`--desktop` / `/desktop`) — never
+  activated from phrasing, because it can do anything you can. `/desktop`
+  requires typing an acknowledgement. The protocol treats on-screen text as
+  **untrusted** (prompt-injection) and forbids destructive/credential/purchase
+  actions unless unambiguously requested. Run it on a contained display/VM.
+
+### Verified
+- Real X11 under Xvfb: absolute pointer move reflected by the server, real
+  screenshot, and the autonomous executor driving a real interactive app — the
+  agent's click flipped a real button from "Submit" to "CLICKED!", confirmed by
+  the screen-diff and the expectation check. 568 passed (12 new).
+
+### Notes
+- Desktop deps live in the new `[desktop]` extra (python-xlib, mss, Pillow).
+- The vision tier (model *sees* screenshots) still needs the multimodal seam —
+  it's the next additive layer; the text/screen-diff tier works on any model.
+
 ## [0.4.0] - 2026-05-31
 
 **Computer use** — reactive, text-first, opt-in. The agent can drive a real

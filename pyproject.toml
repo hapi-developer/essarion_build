@@ -49,6 +49,14 @@ test = [
 computer = [
     "playwright>=1.40",
 ]
+# Desktop tier — control the real machine's mouse/keyboard/screen. python-xlib
+# (X11 input via XTEST), mss (screen capture), Pillow (screen diff). The
+# screen-diff observer itself is pure-Python; these power the live backend.
+desktop = [
+    "python-xlib>=0.33; sys_platform == 'linux'",
+    "mss>=9",
+    "Pillow>=9",
+]
 
 [project.scripts]
 # Both entry points share one dispatcher: bare `essarion` / `essarion-build`

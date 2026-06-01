@@ -95,6 +95,10 @@ class Session(BaseModel):
     # the reactive computer-use tools. Never on by default; set by --computer-use,
     # /computer, or an unambiguous request. Implies autonomous execution.
     computer_use: bool = False
+    # Desktop control (opt-in): drive the REAL machine's mouse/keyboard/screen.
+    # Explicit opt-in only (--desktop / /desktop); never activated from phrasing.
+    # Implies autonomous + computer-use machinery.
+    desktop_control: bool = False
     history: list[TaskTurn] = Field(default_factory=list)
     total_usage: Usage = Field(default_factory=Usage)
     total_cost_usd: float = 0.0
