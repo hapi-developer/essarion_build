@@ -84,6 +84,16 @@ classic **plan → approve → hand-apply** flow:
    `--plan-first`) gives you the plan + verdict BEFORE any code is paid for,
    so you can edit, reject, or send it back. Most agents force one mode; this
    gives you both.
+3. **Code intelligence, not blind grep.** Every turn the agent gets an
+   Aider-style *repo map* — a ranked, token-budgeted skeleton of the codebase's
+   key classes/functions — and tools to navigate it: `repo_map`,
+   `outline <file>`, and `find_symbol <name>` (go-to-definition +
+   find-references). It can edit by *symbol* — `edit_symbol` rewrites a whole
+   function/class located via the AST and refuses to write code that won't
+   parse — and every edit comes back with objective feedback: a `⚠` for a
+   syntax error you just introduced, and a `↔` *blast-radius* note listing the
+   callers of a symbol you changed or removed. All standard library — no
+   tree-sitter, no embeddings, no vector DB.
 3. **Collapsed, readable output + memory.** Each action is one compact,
    faded line (`Created index.html`, `Edited styles.css` + a small diff,
    `Ran npm test` + a short tail) — not a wall of file dumps. The agent
@@ -109,12 +119,15 @@ classic **plan → approve → hand-apply** flow:
 5. **Project-aware.** `essarion init` creates `.essarion/{config.toml,
    sessions/, memory.md}` per repo. The agent auto-detects the project
    root from `.essarion/`, `.git/`, `pyproject.toml`, etc. Per-project
-   memory (`/remember <fact>`) and config flow into every turn.
+   memory (`/remember <fact>`) and config flow into every turn. It also reads
+   **AGENTS.md** (monorepo-nested, nearest-wins) plus `CLAUDE.md` /
+   `.cursorrules` / `.github/copilot-instructions.md`, so a repo already set up
+   for another agent steers this one too.
 6. **Inline tool execution during planning.** The model can emit
    `<tool_call name="read_file">…</tool_call>` inside its plan; the agent
-   runs the read-only tool (read_file, grep, glob, list_dir, find_files),
-   folds the result back as a note, and re-plans. Up to 3 rounds. No
-   user friction.
+   runs the read-only tool (read_file, grep, glob, list_dir, find_files,
+   repo_map, outline, find_symbol), folds the result back as a note, and
+   re-plans. Up to 3 rounds. No user friction.
 7. **Background tasks.** `/bg npm run dev` runs in parallel. The agent
    keeps working; completion notices fire between turns. /quit cleanly
    kills non-detached tasks via SIGTERM → SIGKILL on the process group.

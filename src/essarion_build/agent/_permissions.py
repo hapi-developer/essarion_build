@@ -89,7 +89,7 @@ class PermissionPolicy:
                 tool[str(k)] = v
         aliases = {
             "shell": ["run_shell", "start_background"],
-            "write": ["write_file", "apply_diff"],
+            "write": ["write_file", "apply_diff", "edit_symbol"],
             "delete": ["delete_file"],
             "read": list(_READ_TOOLS),
         }

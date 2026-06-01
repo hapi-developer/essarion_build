@@ -106,6 +106,8 @@ _STARTER_CONFIG = """# Per-project Essarion config. Loaded by `essarion` at REPL
 # budget = 1.00          # USD budget per session
 # skills_mode = "auto"   # auto | all | none
 # escalate_model = ""    # e.g. "anthropic/claude-sonnet-4-6"
+# repo_map = true        # inject a ranked map of the codebase each turn
+# repo_map_chars = 6000  # token budget (in chars) for that map
 
 # Lifecycle hooks — shell commands that run automatically on agent events.
 # Events: pre_tool, post_tool, user_prompt, session_start, stop.

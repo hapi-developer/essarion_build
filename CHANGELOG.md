@@ -9,7 +9,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.3.6] - 2026-06-01
 
-Output-polish release: a calmer, more honest autonomous run.
+Code-intelligence release: give the model structural understanding of the
+codebase (so it stops blind-grepping), robust structural edits, objective
+edit-time feedback, and cross-tool conventions — plus a calmer, more honest
+autonomous run. All zero-dependency (standard library only).
+
+### Added
+
+- **Repo map (Aider-style, zero-dep).** A ranked, token-budgeted skeleton of the
+  codebase's most important symbols (classes/functions + signatures) is built
+  with the stdlib `ast` (Python) / a regex def-table (JS·TS·Go·Rust·Ruby·Java·
+  C/C++·PHP·Swift) and ranked with a pure-Python PageRank over the symbol
+  def/ref graph. It's injected into the model's context each turn so it orients
+  without reading every file. Toggle with `[agent] repo_map` /
+  `repo_map_chars` in `.essarion/config.toml`.
+- **Code-intelligence tools.** `repo_map` (ranked overview), `outline <file>`
+  (a file's symbols + signatures), and `find_symbol <name>` (go-to-definition +
+  find-references across the repo) — far cheaper and more precise than grep.
+- **`edit_symbol` — AST-anchored edits.** Replace a whole function or class *by
+  name* (`Class.method` supported), located via `ast` rather than fuzzy text
+  matching. Refuses to write if the result wouldn't parse, so a structural edit
+  can never leave the file broken.
+- **Post-edit feedback (objective signals only).** After an edit, the tool
+  result carries a `⚠` syntax/JSON/TOML parse error you just introduced (the
+  cheapest reliability gate there is) and a `↔` *blast-radius* note listing the
+  callers of any symbol you changed or removed — so you fix it now and check the
+  dependents, instead of finding out later.
+- **AGENTS.md & convention files.** The agent reads `AGENTS.md`
+  (monorepo-nested, nearest-wins), plus `CLAUDE.md`, `.cursorrules`,
+  `.windsurfrules`, and `.github/copilot-instructions.md`, and injects them as
+  project conventions — instant interop with repos already set up for other
+  agents.
+- **`web_fetch`.** Fetch a URL and get its text (HTML reduced to readable text)
+  for reading docs/changelogs/error pages — stdlib `urllib`, governed by the
+  environment's network policy.
 
 ### Changed
 

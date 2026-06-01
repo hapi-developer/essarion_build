@@ -275,8 +275,41 @@ def _build_context(
                 f"[prior turn {i}] task: {prior.task[:200]!r}. "
                 f"Plan: {plan_short}. Verdict: {verdict_short}."
             )
-    _autoload_files(task, cwd, ctx, console)
+    loaded = _autoload_files(task, cwd, ctx, console)
+    # Cross-tool project conventions (AGENTS.md / CLAUDE.md / .cursorrules …) so
+    # a repo set up for any agent steers this one too.
+    try:
+        from ._conventions import inject_into_context as _inject_conventions
+
+        _inject_conventions(cwd, ctx)
+    except Exception:  # noqa: BLE001 - conventions must never break a turn
+        pass
+    # Repo map — a ranked skeleton of the codebase (Aider-style) so the model
+    # can orient without blind-grepping. Budgeted and biased toward whatever
+    # files the task referenced.
+    try:
+        _inject_repo_map(cwd, ctx, focus=loaded)
+    except Exception:  # noqa: BLE001 - repo map must never break a turn
+        pass
     return ctx, picks, why
+
+
+def _inject_repo_map(cwd: Path, ctx: Context, *, focus: list[str]) -> None:
+    """Attach a token-budgeted repo map to the context. Off via the project's
+    `[agent] repo_map = false`; size via `[agent] repo_map_chars`."""
+    from ._project import find_project_root, load_project_config
+    from ._repomap import build_index, render_map
+
+    try:
+        agent_cfg = load_project_config(find_project_root(cwd)).get("agent") or {}
+    except Exception:  # noqa: BLE001
+        agent_cfg = {}
+    if agent_cfg.get("repo_map") is False:
+        return
+    budget = max(500, min(int(agent_cfg.get("repo_map_chars", 6000)), 20_000))
+    text = render_map(build_index(cwd), focus=set(focus) or None, budget_chars=budget)
+    if text:
+        ctx.add_note(text)
 
 
 def _truncate_one_line(text: str, n: int) -> str:

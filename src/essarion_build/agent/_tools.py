@@ -17,8 +17,6 @@ read tools (read_file, list_dir, grep) run freely.
 from __future__ import annotations
 
 import fnmatch
-import os
-import shlex
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -178,6 +176,162 @@ def glob(pattern: str, max_hits: int = 200) -> str:
     return "\n".join(hits) if hits else "(no matches)"
 
 
+# ---------- code intelligence (read-only) ----------
+
+def repo_map(focus: str = "", max_chars: int = 6000) -> str:
+    """Ranked map of the codebase's most important symbols (classes/functions
+    + signatures). Call this FIRST to orient before grepping or opening files.
+    `focus` is a comma-separated list of paths to bias the ranking toward."""
+    from . import _repomap
+
+    idx = _repomap.build_index(_SANDBOX_ROOT)
+    focus_set = {f.strip() for f in focus.split(",") if f.strip()} or None
+    budget = max(500, min(int(max_chars), 20_000))
+    return _repomap.render_map(idx, focus=focus_set, budget_chars=budget) or (
+        "(no indexable source files found under the sandbox root)"
+    )
+
+
+def outline(path: str) -> str:
+    """Table of contents for ONE file: its classes/functions/methods with
+    signatures and line numbers — far cheaper than reading the whole file."""
+    _resolve(path)  # enforce the sandbox boundary
+    from . import _repomap
+
+    return _repomap.outline_text(_SANDBOX_ROOT, path)
+
+
+def find_symbol(name: str) -> str:
+    """Go-to-definition + find-references in one call: where `name` is defined
+    (with its signature) and every place it's used across the repo. Cheaper and
+    more precise than grepping a bare name. Methods may be given as Class.method."""
+    from . import _repomap
+
+    return _repomap.find_symbol_text(_SANDBOX_ROOT, name)
+
+
+def _strip_html(html_text: str) -> str:
+    """Reduce an HTML document to readable text — no parser dependency."""
+    import html as _html
+    import re as _re
+
+    html_text = _re.sub(r"(?is)<(script|style|head|nav|footer|svg)[^>]*>.*?</\1>", " ", html_text)
+    html_text = _re.sub(r"(?s)<!--.*?-->", " ", html_text)
+    html_text = _re.sub(r"(?i)<br\s*/?>", "\n", html_text)
+    html_text = _re.sub(r"(?i)</(p|div|li|h[1-6]|tr|section|article)>", "\n", html_text)
+    text = _html.unescape(_re.sub(r"(?s)<[^>]+>", " ", html_text))
+    lines = (ln.strip() for ln in text.splitlines())
+    return _re.sub(r"[ \t]{2,}", " ", "\n".join(ln for ln in lines if ln))
+
+
+def web_fetch(url: str, max_chars: int = 8000) -> str:
+    """Fetch an HTTP(S) URL and return its text (HTML reduced to readable text)
+    — for reading docs, changelogs, RFCs, or an error page. Subject to the
+    environment's network policy; returns an error string if egress is blocked."""
+    import urllib.error
+    import urllib.request
+
+    if not url.startswith(("http://", "https://")):
+        url = "https://" + url
+    req = urllib.request.Request(url, headers={"User-Agent": "essarion-build-agent"})
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:  # noqa: S310 - explicit http(s)
+            ctype = resp.headers.get("Content-Type", "")
+            raw = resp.read(2_000_000)
+    except urllib.error.URLError as e:
+        return f"(could not fetch {url}: {getattr(e, 'reason', e)})"
+    except Exception as e:  # noqa: BLE001 - surface, don't crash
+        return f"(could not fetch {url}: {type(e).__name__}: {e})"
+    text = raw.decode("utf-8", errors="replace")
+    if "html" in ctype.lower() or text.lstrip()[:1] == "<":
+        text = _strip_html(text)
+    text = text.strip()
+    cap = max(500, min(int(max_chars), 20_000))
+    if len(text) > cap:
+        text = text[:cap].rstrip() + f"\n… (truncated; {len(raw):,} bytes fetched)"
+    return text or "(empty response)"
+
+
+# ---------- post-edit feedback (objective signals, never subjective critique) ----------
+
+def _syntax_check(path: str, text: str) -> str:
+    """Fast, dependency-free correctness gate on freshly written content.
+
+    Returns a one-line diagnostic to append to the tool result, or "" when the
+    content parses cleanly. Catching the syntax error the model just introduced
+    in the SAME step is the cheapest, highest-value reliability gate there is
+    (SWE-agent measured ~3 points lost without it). Only objective parse
+    errors — no opinions about the code.
+    """
+    import sys
+
+    suffix = Path(path).suffix.lower()
+    try:
+        if suffix in (".py", ".pyi"):
+            compile(text, path, "exec")
+        elif suffix == ".json":
+            import json as _json
+
+            _json.loads(text)
+        elif suffix == ".toml" and sys.version_info >= (3, 11):
+            import tomllib
+
+            tomllib.loads(text)
+    except SyntaxError as e:
+        loc = f":{e.lineno}" if e.lineno else ""
+        return f"⚠ Python syntax error in {path}{loc}: {e.msg} — fix before continuing."
+    except ValueError as e:  # JSONDecodeError / TOMLDecodeError both subclass it
+        return f"⚠ {suffix.lstrip('.').upper()} parse error in {path}: {e} — fix before continuing."
+    return ""
+
+
+def _impact_note(rel: str, before: str, after: str) -> str:
+    """Blast-radius analysis: if an edit removed a symbol or changed its
+    signature, warn which other files reference it so the model checks its
+    callers instead of silently breaking them. Grounded in the symbol index;
+    surfaced automatically at edit time. Python files only."""
+    if Path(rel).suffix.lower() not in (".py", ".pyi"):
+        return ""
+    from . import _repomap
+
+    before_defs = {d.name.split(".")[-1]: d.signature for d in _repomap._py_tags(before).defs}
+    after_defs = {d.name.split(".")[-1]: d.signature for d in _repomap._py_tags(after).defs}
+    risky: list[tuple[str, str]] = []  # (name, "removed" | "changed")
+    for name, sig in before_defs.items():
+        if name.startswith("_") or len(name) < 3:
+            continue  # private / trivial — not worth a callers warning
+        if name not in after_defs:
+            risky.append((name, "removed"))
+        elif after_defs[name] != sig:
+            risky.append((name, "changed the signature of"))
+    lines: list[str] = []
+    for name, verb in risky[:3]:
+        refs = _repomap.find_references(_SANDBOX_ROOT, name, exclude=rel, max_hits=8)
+        if not refs:
+            continue
+        where = ", ".join(f"{r}:{ln}" for r, ln, _ in refs[:4])
+        more = f" (+{len(refs) - 4} more)" if len(refs) > 4 else ""
+        lines.append(f"↔ you {verb} `{name}`, referenced in {len(refs)} site(s): {where}{more} — check them.")
+    return "\n".join(lines)
+
+
+def _post_edit(path: str, after: str, before: str = "") -> str:
+    """Combined edit-time feedback (syntax gate + blast radius), prefixed with a
+    newline so it appends cleanly to a tool result. Best-effort: never raises."""
+    notes: list[str] = []
+    try:
+        s = _syntax_check(path, after)
+        if s:
+            notes.append(s)
+        if before:
+            imp = _impact_note(path, before, after)
+            if imp:
+                notes.append(imp)
+    except Exception:  # noqa: BLE001 - feedback must never break an edit
+        return ""
+    return ("\n" + "\n".join(notes)) if notes else ""
+
+
 # ---------- side-effect tools ----------
 
 def write_file(path: str, content: str) -> str:
@@ -188,6 +342,7 @@ def write_file(path: str, content: str) -> str:
     """
     p = _resolve(path)
     _hooks.before_tool("write_file", {"path": path})
+    before = p.read_text(encoding="utf-8", errors="replace") if p.is_file() else ""
     p.parent.mkdir(parents=True, exist_ok=True)
     try:
         _changes.current_changelog().record(
@@ -196,7 +351,8 @@ def write_file(path: str, content: str) -> str:
     except Exception:  # noqa: BLE001 - changelog must never block a write
         pass
     p.write_text(content, encoding="utf-8")
-    return _hooks.after_tool("write_file", {"path": path}, f"wrote {len(content):,} bytes to {path}")
+    msg = f"wrote {len(content):,} bytes to {path}" + _post_edit(path, content, before)
+    return _hooks.after_tool("write_file", {"path": path}, msg)
 
 
 def _fuzzy_replace(body: str, old: str, new: str) -> str | None:
@@ -277,7 +433,78 @@ def apply_diff(path: str, old: str, new: str) -> str:
     except Exception:  # noqa: BLE001
         pass
     p.write_text(new_body, encoding="utf-8")
-    return _hooks.after_tool("apply_diff", {"path": path}, f"{how} {path}")
+    return _hooks.after_tool("apply_diff", {"path": path}, f"{how} {path}" + _post_edit(path, new_body, body))
+
+
+def _replace_symbol_source(source: str, symbol: str, new_source: str) -> str:
+    """Locate `symbol` (a def/class, or dotted `Class.method`) in `source` via
+    `ast` and replace its full span — decorators included — with `new_source`,
+    re-indented to the symbol's original column. Raises ValueError if not found.
+    """
+    import ast as _ast
+    import textwrap
+
+    tree = _ast.parse(source)
+
+    def _find(body, names: list[str]):
+        head, rest = names[0], names[1:]
+        for n in body:
+            if isinstance(n, (_ast.FunctionDef, _ast.AsyncFunctionDef, _ast.ClassDef)) and n.name == head:
+                return n if not rest else _find(n.body, rest)
+        return None
+
+    target = _find(tree.body, symbol.split("."))
+    if target is None:
+        raise ValueError(
+            f"symbol {symbol!r} not found (give a top-level def/class, or a "
+            f"method as Class.method)"
+        )
+    start = min([target.lineno] + [d.lineno for d in getattr(target, "decorator_list", [])])
+    end = getattr(target, "end_lineno", target.lineno) or target.lineno
+    indent = " " * target.col_offset
+    dedented = textwrap.dedent(new_source).strip("\n")
+    new_lines = [(indent + ln) if ln.strip() else "" for ln in dedented.split("\n")]
+    replacement = "\n".join(new_lines)
+
+    lines = source.splitlines(keepends=True)
+    head = "".join(lines[: start - 1])
+    tail = "".join(lines[end:])
+    if not replacement.endswith("\n"):
+        replacement += "\n"
+    return head + replacement + tail
+
+
+def edit_symbol(path: str, symbol: str, new_source: str) -> str:
+    """Replace a whole function or class BY NAME with `new_source` — an
+    AST-anchored edit, more robust than apply_diff for rewriting a definition
+    (no fuzzy text matching, no uniqueness ambiguity). `symbol` may be dotted
+    for a method (e.g. "Parser.parse"). Python files only.
+
+    Records the change for `/undo`; refuses to write if the result wouldn't
+    parse, so a structural edit can never leave the file broken.
+    """
+    p = _resolve(path)
+    if not p.is_file():
+        raise FileNotFoundError(f"not a file: {path}")
+    if p.suffix.lower() not in (".py", ".pyi"):
+        raise ValueError("edit_symbol supports Python only; use apply_diff for other languages")
+    _hooks.before_tool("edit_symbol", {"path": path})
+    before = p.read_text(encoding="utf-8")
+    new_body = _replace_symbol_source(before, symbol, new_source)
+    try:
+        compile(new_body, path, "exec")
+    except SyntaxError as e:
+        raise ValueError(
+            f"that edit would not parse (line {e.lineno}: {e.msg}); the file was left unchanged"
+        ) from None
+    try:
+        _changes.current_changelog().record(path, after=new_body, sandbox_root=_SANDBOX_ROOT)
+    except Exception:  # noqa: BLE001
+        pass
+    p.write_text(new_body, encoding="utf-8")
+    return _hooks.after_tool(
+        "edit_symbol", {"path": path}, f"rewrote {symbol} in {path}" + _post_edit(path, new_body, before)
+    )
 
 
 def delete_file(path: str) -> str:
@@ -429,8 +656,13 @@ def register_all() -> None:
     sdk_tools.register_tool("grep", description="search files for a regex")(grep)
     sdk_tools.register_tool("find_files", description="find files by fnmatch name pattern")(find_files)
     sdk_tools.register_tool("glob", description="path-shaped glob from the sandbox root")(glob)
+    sdk_tools.register_tool("repo_map", description="ranked map of the codebase's key symbols")(repo_map)
+    sdk_tools.register_tool("outline", description="symbols (with signatures) defined in one file")(outline)
+    sdk_tools.register_tool("find_symbol", description="where a symbol is defined and referenced")(find_symbol)
+    sdk_tools.register_tool("web_fetch", description="fetch a URL and return its text")(web_fetch)
     sdk_tools.register_tool("write_file", description="write a file")(write_file)
     sdk_tools.register_tool("apply_diff", description="replace a unique snippet in a file")(apply_diff)
+    sdk_tools.register_tool("edit_symbol", description="replace a function/class by name (AST-anchored)")(edit_symbol)
     sdk_tools.register_tool("delete_file", description="delete a file (undoable)")(delete_file)
     sdk_tools.register_tool("run_shell", description="run a shell command (blocking)")(run_shell)
     sdk_tools.register_tool("start_background", description="start a background task; returns id")(start_background)

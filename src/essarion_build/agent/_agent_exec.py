@@ -44,12 +44,13 @@ from . import _ui
 # whole point here.
 AUTONOMOUS_ALLOW = {
     "read_file", "list_dir", "grep", "find_files", "glob",
-    "write_file", "apply_diff", "delete_file", "run_shell",
+    "repo_map", "outline", "find_symbol", "web_fetch",
+    "write_file", "apply_diff", "edit_symbol", "delete_file", "run_shell",
     "start_background", "check_background", "wait_background",
     "kill_background", "list_background",
 }
 # Of those, the ones that change files on disk (for files_touched accounting).
-_MUTATING = {"write_file", "apply_diff", "delete_file"}
+_MUTATING = {"write_file", "apply_diff", "edit_symbol", "delete_file"}
 
 # Default safety cap on the number of model<->tool rounds. Generous so a full
 # multi-file task (scaffold → fill in → run → fix) can finish in one turn.
@@ -139,9 +140,16 @@ def _system_prompt(ctx: Context, memory: str = "") -> str:
         "- Emit one or more tool calls, each on the form:\n"
         "  <tool_call name=\"TOOL\">{\"arg\": \"value\"}</tool_call>\n"
         "- After each batch you receive <tool_result> blocks. Read them and "
-        "continue. Inspect before you edit (read_file/list_dir/grep/glob), make "
-        "focused changes (write_file for new files, apply_diff for edits, "
-        "delete_file to remove), and verify with run_shell when you can.\n"
+        "continue. ORIENT FIRST in an unfamiliar codebase: `repo_map` gives a "
+        "ranked overview of the key symbols, `outline <file>` lists one file's "
+        "symbols, and `find_symbol <name>` jumps to a definition and its "
+        "callers — faster and cheaper than grepping or reading whole files. "
+        "Then make focused changes: write_file for new files, apply_diff for "
+        "small edits, edit_symbol to rewrite a whole function/class by name, "
+        "delete_file to remove. Verify with run_shell when you can.\n"
+        "- An edit result may carry automatic feedback: a `⚠` syntax error you "
+        "just introduced (fix it before moving on) or a `↔` note listing the "
+        "callers of a symbol you changed or removed (go check them). Act on it.\n"
         "- Build the COMPLETE solution, not a stub: create every source file, "
         "config, entry point, and test the goal needs. Don't stop after one "
         "file. After writing code, run it (run_shell / start_background) to "
@@ -251,17 +259,27 @@ def _verb_for(name: str, existed: bool) -> str:
     if name == "write_file":
         return "Updated" if existed else "Created"
     return {
-        "apply_diff": "Edited", "delete_file": "Deleted", "read_file": "Read",
-        "list_dir": "Listed", "grep": "Searched", "find_files": "Searched",
-        "glob": "Searched", "run_shell": "Ran", "start_background": "Started",
+        "apply_diff": "Edited", "edit_symbol": "Edited", "delete_file": "Deleted",
+        "read_file": "Read", "list_dir": "Listed", "grep": "Searched",
+        "find_files": "Searched", "glob": "Searched", "run_shell": "Ran",
+        "repo_map": "Mapped", "outline": "Outlined", "find_symbol": "Looked up",
+        "web_fetch": "Fetched", "start_background": "Started",
         "check_background": "Checked task", "wait_background": "Waited on task",
         "kill_background": "Killed task", "list_background": "Listed tasks",
     }.get(name, f"Used {name}")
 
 
 def _target_for(name: str, args: dict[str, Any]) -> str:
-    if name in {"write_file", "apply_diff", "delete_file", "read_file"}:
+    if name in {"write_file", "apply_diff", "delete_file", "read_file", "outline"}:
         return str(args.get("path", ""))
+    if name == "edit_symbol":
+        return f"{args.get('symbol', '')} in {args.get('path', '')}".strip()
+    if name == "find_symbol":
+        return str(args.get("name", ""))
+    if name == "web_fetch":
+        return str(args.get("url", ""))
+    if name == "repo_map":
+        return str(args.get("focus", "")) or "the codebase"
     if name == "list_dir":
         return str(args.get("path", "."))
     if name in {"grep", "find_files", "glob"}:
