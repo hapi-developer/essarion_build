@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.4] - 2026-06-01
+
+The autonomous release. The CLI agent is now **agentic by default** — like
+Claude Code or Codex, it plans internally and then creates/edits/deletes files
+and runs shell commands in a loop until the whole task is done, with **no
+plan-approval gate** and **no single-file "apply" step**. Multi-file scaffolds,
+"run the tests and fix failures", and full end-to-end tasks now just work from a
+plain prompt. The classic plan → approve → hand-apply flow is one keystroke
+away (`/auto off` or `--plan-first`).
+
 ### Changed
 
 - **Autonomous mode is now the DEFAULT.** A bare task (in the REPL, one-shot
