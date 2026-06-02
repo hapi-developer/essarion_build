@@ -24,7 +24,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from .. import tools as sdk_tools
-from . import _background, _changes, _hooks
+from . import _background, _changes, _diagnostics, _hooks
 
 
 # Resolved per-session by the REPL via `bind_tools(cwd, ...)`. Keeping
@@ -46,6 +46,7 @@ def bind_tools(cwd: str | Path, *, auto_approve: bool = False) -> None:
     _background.bind_manager(_SANDBOX_ROOT)
     _changes.bind_changelog(_SANDBOX_ROOT)
     _hooks.bind_hooks(_SANDBOX_ROOT)
+    _diagnostics.configure(_SANDBOX_ROOT)
 
 
 def _resolve(path: str) -> Path:
@@ -323,6 +324,12 @@ def _post_edit(path: str, after: str, before: str = "") -> str:
         s = _syntax_check(path, after)
         if s:
             notes.append(s)
+        elif _diagnostics.LINT_ON_EDIT:
+            # Syntax is fine — ask an installed checker (ruff/pyflakes/ruby -c/…)
+            # for real diagnostics. Auto-detected; silent when none is present.
+            d = _diagnostics.diagnose(_SANDBOX_ROOT / path, root=_SANDBOX_ROOT)
+            if d:
+                notes.append(d)
         if before:
             imp = _impact_note(path, before, after)
             if imp:

@@ -37,6 +37,12 @@ autonomous run. All zero-dependency (standard library only).
   cheapest reliability gate there is) and a `↔` *blast-radius* note listing the
   callers of any symbol you changed or removed — so you fix it now and check the
   dependents, instead of finding out later.
+- **Zero-config diagnostics on edit.** When a fast, standalone checker is
+  installed — `ruff`/`pyflakes` (Python), `ruby -c`, `php -l`, `shellcheck`,
+  `luacheck` — its real diagnostics (undefined names, unused imports, lint) are
+  auto-detected and folded into the edit result. On by default, no setup; silent
+  when nothing's installed. Turn off with `[verify] lint_on_edit = false` or
+  `ESSARION_NO_LINT_ON_EDIT=1`.
 - **AGENTS.md & convention files.** The agent reads `AGENTS.md`
   (monorepo-nested, nearest-wins), plus `CLAUDE.md`, `.cursorrules`,
   `.windsurfrules`, and `.github/copilot-instructions.md`, and injects them as

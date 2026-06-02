@@ -91,9 +91,11 @@ classic **plan → approve → hand-apply** flow:
    find-references). It can edit by *symbol* — `edit_symbol` rewrites a whole
    function/class located via the AST and refuses to write code that won't
    parse — and every edit comes back with objective feedback: a `⚠` for a
-   syntax error you just introduced, and a `↔` *blast-radius* note listing the
-   callers of a symbol you changed or removed. All standard library — no
-   tree-sitter, no embeddings, no vector DB.
+   syntax error you just introduced, a real-linter diagnostic when one is
+   installed (`ruff`/`pyflakes`/`ruby -c`/`php -l`/`shellcheck`, auto-detected,
+   zero-config), and a `↔` *blast-radius* note listing the callers of a symbol
+   you changed or removed. All standard library — no tree-sitter, no embeddings,
+   no vector DB.
 3. **Collapsed, readable output + memory.** Each action is one compact,
    faded line (`Created index.html`, `Edited styles.css` + a small diff,
    `Ran npm test` + a short tail) — not a wall of file dumps. The agent
