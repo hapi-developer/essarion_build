@@ -982,7 +982,7 @@ def run_turn(console, session: Session, task: str) -> None:
         cost_usd=turn.cost_usd,
         budget_usd=session.budget_usd, cached=turn.usage.cached_tokens,
     )
-    if session.total_cost_usd > session.budget_usd:
+    if session.budget_usd and session.total_cost_usd > session.budget_usd:
         console.print(
             f"[cost.over]budget exceeded by ${session.total_cost_usd - session.budget_usd:.4f}[/cost.over]"
         )
@@ -1195,7 +1195,7 @@ def run_goal(console, session: Session, goal: str, *, max_rounds: int = 6) -> No
         if result.stopped_reason == "done":
             console.print(f"[ok]🎯 goal accomplished in {rnd} round(s).[/ok]")
             return
-        if result.stopped_reason in ("budget", "error"):
+        if result.stopped_reason in ("budget", "error", "no_action"):
             console.print(f"[warn]🎯 stopped ({result.stopped_reason}) before the goal was complete.[/warn]")
             return
         if session.budget_usd and session.total_cost_usd >= session.budget_usd:

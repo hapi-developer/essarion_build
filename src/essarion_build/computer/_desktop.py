@@ -210,6 +210,8 @@ class QuartzInput:
     def press_key(self, key: str) -> None:
         CG = self.CG
         parts = [p.strip().lower() for p in key.split("+") if p.strip()]
+        if not parts:
+            return
         *mods, main = parts
         flags = 0
         for m in mods:
@@ -313,6 +315,8 @@ class WindowsInput:
 
     def press_key(self, key: str) -> None:
         parts = [p.strip().lower() for p in key.split("+") if p.strip()]
+        if not parts:
+            return
         *mods, main = parts
         codes = [self._VK[m] for m in mods if m in self._VK]
         main_vk = self._VK.get(main)

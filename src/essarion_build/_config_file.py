@@ -65,7 +65,7 @@ def load_config_file(
             data = _toml_load(p.read_text(encoding="utf-8"))
             defaults = data.get("defaults") or {}
             kwargs: dict[str, Any] = {}
-            for key in ("provider", "runtime", "model", "triage_model", "api_key", "max_tokens"):
+            for key in ("provider", "runtime", "model", "triage_model", "api_key", "max_tokens", "effort"):
                 if key in defaults:
                     kwargs[key] = defaults[key]
             if kwargs:

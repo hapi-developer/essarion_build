@@ -1462,7 +1462,11 @@ def _cmd_bg(console: Console, session: Session, args: str) -> CommandResult:
             console.print("[err]usage: /bg wait <id> [seconds][/err]")
             return "continue"
         task_id = wparts[0]
-        timeout = float(wparts[1]) if len(wparts) > 1 else 60.0
+        try:
+            timeout = float(wparts[1]) if len(wparts) > 1 else 60.0
+        except ValueError:
+            console.print("[err]usage: /bg wait <id> [seconds][/err]")
+            return "continue"
         with console.status(f"[brand]waiting for {task_id} (≤{timeout:.0f}s)…[/brand]"):
             try:
                 task = mgr.wait(task_id, timeout=timeout)
@@ -1505,7 +1509,8 @@ def _cmd_bg(console: Console, session: Session, args: str) -> CommandResult:
             f"[meta]pid={task.pid} · {task.name}[/meta]{suffix}"
         )
     else:
-        console.print(f"[err]failed to start[/err]: {task.stderr_tail[:1]}")
+        detail = " ".join(task.stderr_tail).strip() or task.status
+        console.print(f"[err]failed to start[/err]: {detail}")
     return "continue"
 
 # Public dispatch table: name → (function, description).

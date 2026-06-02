@@ -46,17 +46,37 @@ def parse_unified_diff(diff_text: str) -> list[_FilePatch]:
     """Split a unified diff into per-file `_FilePatch` records."""
     out: list[_FilePatch] = []
     current: _FilePatch | None = None
-    for line in diff_text.splitlines():
+    lines = diff_text.splitlines()
+    for i, line in enumerate(lines):
+        # File-header detection. A *removed* source line whose text starts with
+        # "-- " (SQL/Lua/Haskell comments, an email signature delimiter) renders
+        # as "--- ..." in the diff, and a *added* "++ " line as "+++ ...", so a
+        # bare `---`/`+++` line is ambiguous in isolation. Real unified-diff
+        # headers always come as the consecutive triple
+        #     --- <old>
+        #     +++ <new>
+        #     @@ ... @@
+        # so require that exact shape before starting a new file slice — that
+        # way an in-hunk "-- comment" deletion is not mistaken for a header
+        # (which used to split one file into two panels and drop its counts).
         m_a = _FILE_HEADER_RE.match(line)
-        if m_a:
-            # Start a new patch when we see `--- a/...`.
+        nxt = lines[i + 1] if i + 1 < len(lines) else ""
+        nxt2 = lines[i + 2] if i + 2 < len(lines) else ""
+        if m_a and _FILE_HEADER_RE_B.match(nxt) and _HUNK_RE.match(nxt2):
             if current is not None:
                 out.append(current)
             current = _FilePatch(old_path=m_a.group(1))
             current.lines.append(line)
             continue
         m_b = _FILE_HEADER_RE_B.match(line)
-        if m_b and current is not None and not current.new_path:
+        if (
+            m_b
+            and current is not None
+            and not current.new_path
+            and current.lines
+            and _FILE_HEADER_RE.match(current.lines[-1])
+        ):
+            # The `+++` half of the header pair we just opened with its `---`.
             current.new_path = m_b.group(1)
             current.lines.append(line)
             continue
@@ -64,9 +84,12 @@ def parse_unified_diff(diff_text: str) -> list[_FilePatch]:
             # Stray content before any file header — start a synthetic patch.
             current = _FilePatch()
         current.lines.append(line)
-        if line.startswith("+") and not line.startswith("+++"):
+        # Any `+`/`-` line reaching here is hunk content (the real `---`/`+++`
+        # headers were consumed above), so count it — including content lines
+        # that themselves begin with `++ ` / `-- `.
+        if line.startswith("+"):
             current.additions += 1
-        elif line.startswith("-") and not line.startswith("---"):
+        elif line.startswith("-"):
             current.deletions += 1
     if current is not None:
         out.append(current)
@@ -88,7 +111,12 @@ def _render_patch(patch: _FilePatch) -> Panel:
         else:
             rendered.append(Text(line))
 
-    title_path = patch.new_path or patch.old_path or "(diff)"
+    # For a deleted file the new path is `/dev/null`; for a created file the old
+    # path is. Treat `/dev/null` as empty so the panel is titled with the real
+    # file that changed rather than the placeholder.
+    old = "" if patch.old_path == "/dev/null" else patch.old_path
+    new = "" if patch.new_path == "/dev/null" else patch.new_path
+    title_path = new or old or "(diff)"
     stats = f"+{patch.additions} −{patch.deletions}"
     title = f"[brand]{title_path}[/brand]  [meta]({stats})[/meta]"
     return Panel(

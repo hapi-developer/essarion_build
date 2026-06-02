@@ -40,7 +40,7 @@ _STOP = {
     "of", "on", "or", "so", "such", "that", "the", "their", "then", "there",
     "these", "they", "this", "to", "us", "was", "we", "what", "when", "which",
     "who", "will", "with", "you", "your", "do", "does", "did", "can", "could",
-    "should", "would", "want", "wants", "wanted", "be", "been", "being", "i'd",
+    "should", "would", "want", "wants", "wanted", "been", "being", "i'd",
     "i'm", "i've", "im", "ill",
 }
 

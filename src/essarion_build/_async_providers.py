@@ -22,6 +22,7 @@ from ._providers import (
     ProviderResponse,
     StreamChunk,
     Usage,
+    _mark_last_cacheable,
     _parse_gemini_response,
     _parse_ollama_response,
     _parse_openai_compatible_response,
@@ -99,12 +100,14 @@ class _AsyncOpenAICompatibleProvider:
     def _build_body(
         self, *, system: str, messages: list[dict[str, Any]], max_tokens: int
     ) -> dict[str, Any]:
+        from ._content import render_openai
+
         return {
             "model": self.model,
             "max_tokens": max_tokens,
             "messages": [
                 {"role": "system", "content": system},
-                *messages,
+                *({**m, "content": render_openai(m["content"])} for m in messages),
             ],
         }
 
@@ -212,7 +215,10 @@ class _AsyncAnthropicProvider:
             AuthenticationError,
             RateLimitError,
         )
+        from ._content import render_anthropic
 
+        rendered = [{**m, "content": render_anthropic(m["content"])} for m in messages]
+        _mark_last_cacheable(rendered)
         try:
             response = await self._client.messages.create(
                 model=self.model,
@@ -224,7 +230,7 @@ class _AsyncAnthropicProvider:
                         "cache_control": {"type": "ephemeral"},
                     }
                 ],
-                messages=messages,
+                messages=rendered,
             )
         except AuthenticationError as e:
             raise ProviderAuthError(
@@ -281,11 +287,13 @@ class _AsyncGeminiProvider:
         messages: list[dict[str, Any]],
         max_tokens: int,
     ) -> ProviderResponse:
+        from ._content import render_gemini_parts
+
         contents: list[dict[str, Any]] = []
         for m in messages:
             wire_role = "model" if m["role"] == "assistant" else "user"
             contents.append(
-                {"role": wire_role, "parts": [{"text": m["content"]}]}
+                {"role": wire_role, "parts": render_gemini_parts(m["content"])}
             )
         body = {
             "systemInstruction": {"parts": [{"text": system}]},
@@ -352,13 +360,15 @@ class _AsyncOllamaProvider:
         messages: list[dict[str, Any]],
         max_tokens: int,
     ) -> ProviderResponse:
+        from ._content import content_to_text
+
         body = {
             "model": self.model,
             "stream": False,
             "options": {"num_predict": max_tokens},
             "messages": [
                 {"role": "system", "content": system},
-                *messages,
+                *({**m, "content": content_to_text(m["content"])} for m in messages),
             ],
         }
         last_error: Exception | None = None
