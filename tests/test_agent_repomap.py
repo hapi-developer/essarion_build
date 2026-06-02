@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+import shutil
+import subprocess
+
+import pytest
+
 from essarion_build.agent import _repomap as rm
 
 
@@ -100,3 +105,18 @@ def test_personalization_biases_focus(tmp_path):
     scored = rm.rank_symbols(idx, focus={"app.py"})
     top_file = scored[0][1]
     assert top_file == "app.py"  # focus floats its symbols to the top
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git not installed")
+def test_index_respects_gitignore(tmp_path):
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    (tmp_path / ".gitignore").write_text("secret.py\ngenerated/\n")
+    (tmp_path / "keep.py").write_text("def keep():\n    return 1\n")
+    (tmp_path / "secret.py").write_text("def secret():\n    return 2\n")
+    (tmp_path / "generated").mkdir()
+    (tmp_path / "generated" / "g.py").write_text("def g():\n    return 3\n")
+    files = set(rm.build_index(tmp_path).defs_by_file)
+    assert "keep.py" in files
+    assert "secret.py" not in files          # .gitignore line
+    assert "generated/g.py" not in files     # .gitignore dir
+

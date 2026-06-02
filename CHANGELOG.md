@@ -21,8 +21,10 @@ autonomous run. All zero-dependency (standard library only).
   with the stdlib `ast` (Python) / a regex def-table (JS·TS·Go·Rust·Ruby·Java·
   C/C++·PHP·Swift) and ranked with a pure-Python PageRank over the symbol
   def/ref graph. It's injected into the model's context each turn so it orients
-  without reading every file. Toggle with `[agent] repo_map` /
-  `repo_map_chars` in `.essarion/config.toml`.
+  without reading every file. Honours the project's `.gitignore` automatically
+  (via `git check-ignore`, with a graceful fallback when git is absent) so
+  generated/vendored files don't pollute the map. Toggle with `[agent] repo_map`
+  / `repo_map_chars` in `.essarion/config.toml`.
 - **Code-intelligence tools.** `repo_map` (ranked overview), `outline <file>`
   (a file's symbols + signatures), and `find_symbol <name>` (go-to-definition +
   find-references across the repo) — far cheaper and more precise than grep.

@@ -26,9 +26,15 @@ from __future__ import annotations
 
 import ast
 import re
+import shutil
+import subprocess
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
+
+# Resolved once: lets us honour the project's real .gitignore (via
+# `git check-ignore`) so generated/vendored files don't pollute the map.
+_GIT = shutil.which("git")
 
 # Directories we never descend into — VCS, dependency, and build caches. The
 # walk would otherwise spend all its time in node_modules.
@@ -249,11 +255,32 @@ class RepoIndex:
         return list(self.defs_by_file)
 
 
+def _gitignored(root: Path, rels: list[str]) -> set[str]:
+    """The subset of `rels` the project's .gitignore excludes, via
+    `git check-ignore`. Correct gitignore semantics (incl. global excludes), and
+    untracked-but-not-ignored new files are kept. Empty set when git is absent or
+    `root` isn't a repo — so the walk degrades to the built-in ignore dirs."""
+    if not rels or _GIT is None:
+        return set()
+    try:
+        proc = subprocess.run(
+            [_GIT, "-C", str(root), "check-ignore", "--stdin"],
+            input="\n".join(rels), capture_output=True, text=True,
+            timeout=10, check=False,
+        )
+    except Exception:  # noqa: BLE001 - never let ignore-checking break a scan
+        return set()
+    if proc.returncode not in (0, 1):  # 128 → not a repo / error
+        return set()
+    return {ln.strip() for ln in proc.stdout.splitlines() if ln.strip()}
+
+
 def _iter_source_files(root: Path):
-    """Yield source files under `root`, skipping ignored dirs, newest caps."""
-    count = 0
+    """Yield source files under `root`, skipping ignored dirs and anything the
+    project's .gitignore excludes, up to `_MAX_FILES`."""
+    candidates: list[Path] = []
     for p in sorted(root.rglob("*")):
-        if count >= _MAX_FILES:
+        if len(candidates) >= _MAX_FILES:
             break
         if not p.is_file():
             continue
@@ -261,8 +288,11 @@ def _iter_source_files(root: Path):
             continue
         if p.suffix.lower() not in _LANG_BY_EXT:
             continue
-        count += 1
-        yield p
+        candidates.append(p)
+    ignored = _gitignored(root, [p.relative_to(root).as_posix() for p in candidates])
+    for p in candidates:
+        if p.relative_to(root).as_posix() not in ignored:
+            yield p
 
 
 def build_index(root: str | Path) -> RepoIndex:
