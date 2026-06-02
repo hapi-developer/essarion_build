@@ -7,6 +7,79 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.6] - 2026-06-01
+
+Code-intelligence release: give the model structural understanding of the
+codebase (so it stops blind-grepping), robust structural edits, objective
+edit-time feedback, and cross-tool conventions — plus a calmer, more honest
+autonomous run. All zero-dependency (standard library only).
+
+### Added
+
+- **Repo map (Aider-style, zero-dep).** A ranked, token-budgeted skeleton of the
+  codebase's most important symbols (classes/functions + signatures) is built
+  with the stdlib `ast` (Python) / a regex def-table (JS·TS·Go·Rust·Ruby·Java·
+  C/C++·PHP·Swift) and ranked with a pure-Python PageRank over the symbol
+  def/ref graph. It's injected into the model's context each turn so it orients
+  without reading every file. Honours the project's `.gitignore` automatically
+  (via `git check-ignore`, with a graceful fallback when git is absent) so
+  generated/vendored files don't pollute the map. Toggle with `[agent] repo_map`
+  / `repo_map_chars` in `.essarion/config.toml`.
+- **Code-intelligence tools.** `repo_map` (ranked overview), `outline <file>`
+  (a file's symbols + signatures), and `find_symbol <name>` (go-to-definition +
+  find-references across the repo) — far cheaper and more precise than grep.
+  Also surfaced as slash commands for humans: `/map`, `/outline <file>`,
+  `/symbol <name>`.
+- **`edit_symbol` — AST-anchored edits.** Replace a whole function or class *by
+  name* (`Class.method` supported), located via `ast` rather than fuzzy text
+  matching. Refuses to write if the result wouldn't parse, so a structural edit
+  can never leave the file broken.
+- **Post-edit feedback (objective signals only).** After an edit, the tool
+  result carries a `⚠` syntax/JSON/TOML parse error you just introduced (the
+  cheapest reliability gate there is) and a `↔` *blast-radius* note listing the
+  callers of any symbol you changed or removed — so you fix it now and check the
+  dependents, instead of finding out later.
+- **Zero-config diagnostics on edit.** When a fast, standalone checker is
+  installed — `ruff`/`pyflakes` (Python), `ruby -c`, `php -l`, `shellcheck`,
+  `luacheck` — its real diagnostics (undefined names, unused imports, lint) are
+  auto-detected and folded into the edit result. On by default, no setup; silent
+  when nothing's installed. Turn off with `[verify] lint_on_edit = false` or
+  `ESSARION_NO_LINT_ON_EDIT=1`.
+- **AGENTS.md & convention files.** The agent reads `AGENTS.md`
+  (monorepo-nested, nearest-wins), plus `CLAUDE.md`, `.cursorrules`,
+  `.windsurfrules`, and `.github/copilot-instructions.md`, and injects them as
+  project conventions — instant interop with repos already set up for other
+  agents.
+- **`web_fetch`.** Fetch a URL and get its text (HTML reduced to readable text)
+  for reading docs/changelogs/error pages — stdlib `urllib`, governed by the
+  environment's network policy.
+
+### Changed
+
+- **Quieter todo checklist.** The live checklist now renders only when it
+  actually advances: the full plan prints once, then each step shows just the
+  line(s) that changed (a `☑` done + the next `▶` doing), and a re-sent
+  identical list prints nothing. (The model is also told to call `update_todos`
+  only when starting/finishing a step, not after every action.)
+- **Edits show a diffstat, not the code.** A successful `apply_diff` now renders
+  a compact `+added −removed` line-count summary instead of dumping the changed
+  code; use `/diff` to view the actual change.
+- **Quieter reasoning narration.** On a step that also takes an action, the
+  model's "I'll now…" prose is shown as a single dim, truncated lead-in instead
+  of a bright multi-line block, so the action lines dominate. A prose-only step
+  (a direct answer) is still shown in full.
+
+### Fixed
+
+- **Resilient `apply_diff`.** When the snippet doesn't match verbatim, the edit
+  now falls back to a whitespace/indentation-tolerant match (re-indenting the
+  replacement to align with the matched block) instead of failing with "old
+  text not found" and burning a step.
+- **Failed commands no longer show a green ✓.** A shell command that runs but
+  exits nonzero is now marked ✗ and recorded as failed.
+- **`open <file>` works on Linux** — it's translated to `xdg-open` (a macOS-ism
+  models reach for) when that's available.
+
 ## [0.3.5] - 2026-06-01
 
 The Claude-Code-parity release. The autonomous agent gains **conversation

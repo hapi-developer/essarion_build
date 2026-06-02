@@ -34,6 +34,7 @@ _HELP_GROUPS: list[tuple[str, list[str]]] = [
     ("models & cost", ["/model", "/escalate", "/budget", "/cost", "/stream", "/keys"]),
     ("skills & memory", ["/skills", "/remember", "/forget"]),
     ("project & files", ["/cd", "/pwd"]),
+    ("code intelligence", ["/map", "/outline", "/symbol"]),
     ("changes & verify", ["/diff", "/undo", "/commit", "/verify", "/lint"]),
     ("background", ["/bg"]),
     ("safety", ["/auto", "/computer", "/desktop", "/yolo", "/hooks"]),
@@ -235,6 +236,41 @@ def _cmd_cd(console: Console, session: Session, args: str) -> CommandResult:
 
 def _cmd_pwd(console: Console, session: Session, args: str) -> CommandResult:
     console.print(session.cwd)
+    return "continue"
+
+
+def _cmd_map(console: Console, session: Session, args: str) -> CommandResult:
+    """Show the repo map — the ranked skeleton the agent sees each turn.
+    Optional args bias the ranking toward those paths: /map src/auth.py"""
+    from ._repomap import build_index, render_map
+
+    focus = {a.strip() for a in args.split() if a.strip()} or None
+    text = render_map(build_index(session.cwd), focus=focus, budget_chars=8000)
+    console.print(text or "[meta]no indexable source files found[/meta]")
+    return "continue"
+
+
+def _cmd_outline(console: Console, session: Session, args: str) -> CommandResult:
+    """Show one file's symbols + signatures: /outline path/to/file.py"""
+    rel = args.strip()
+    if not rel:
+        console.print("[warn]usage:[/warn] /outline <file>")
+        return "continue"
+    from ._repomap import outline_text
+
+    console.print(outline_text(session.cwd, rel))
+    return "continue"
+
+
+def _cmd_symbol(console: Console, session: Session, args: str) -> CommandResult:
+    """Find where a symbol is defined and referenced: /symbol parse_config"""
+    name = args.strip()
+    if not name:
+        console.print("[warn]usage:[/warn] /symbol <name>")
+        return "continue"
+    from ._repomap import find_symbol_text
+
+    console.print(find_symbol_text(session.cwd, name))
     return "continue"
 
 
@@ -1226,6 +1262,9 @@ COMMANDS: dict[str, tuple[Callable, str]] = {
     "/skills": (_cmd_skills, "list skills or set picker mode (auto|all|none)"),
     "/cd": (_cmd_cd, "change the sandbox cwd"),
     "/pwd": (_cmd_pwd, "print the sandbox cwd"),
+    "/map": (_cmd_map, "show the repo map (ranked symbol skeleton); args bias the ranking"),
+    "/outline": (_cmd_outline, "list one file's symbols + signatures: /outline <file>"),
+    "/symbol": (_cmd_symbol, "find where a symbol is defined and referenced: /symbol <name>"),
     "/history": (_cmd_history, "list this session's turns"),
     "/save": (_cmd_save, "persist the session to the sessions dir"),
     "/load": (_cmd_load, "list saved sessions"),

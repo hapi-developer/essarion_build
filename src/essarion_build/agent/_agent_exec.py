@@ -44,12 +44,13 @@ from . import _ui
 # whole point here.
 AUTONOMOUS_ALLOW = {
     "read_file", "list_dir", "grep", "find_files", "glob",
-    "write_file", "apply_diff", "delete_file", "run_shell",
+    "repo_map", "outline", "find_symbol", "web_fetch",
+    "write_file", "apply_diff", "edit_symbol", "delete_file", "run_shell",
     "start_background", "check_background", "wait_background",
     "kill_background", "list_background",
 }
 # Of those, the ones that change files on disk (for files_touched accounting).
-_MUTATING = {"write_file", "apply_diff", "delete_file"}
+_MUTATING = {"write_file", "apply_diff", "edit_symbol", "delete_file"}
 
 # Default safety cap on the number of model<->tool rounds. Generous so a full
 # multi-file task (scaffold → fill in → run → fix) can finish in one turn.
@@ -139,9 +140,16 @@ def _system_prompt(ctx: Context, memory: str = "") -> str:
         "- Emit one or more tool calls, each on the form:\n"
         "  <tool_call name=\"TOOL\">{\"arg\": \"value\"}</tool_call>\n"
         "- After each batch you receive <tool_result> blocks. Read them and "
-        "continue. Inspect before you edit (read_file/list_dir/grep/glob), make "
-        "focused changes (write_file for new files, apply_diff for edits, "
-        "delete_file to remove), and verify with run_shell when you can.\n"
+        "continue. ORIENT FIRST in an unfamiliar codebase: `repo_map` gives a "
+        "ranked overview of the key symbols, `outline <file>` lists one file's "
+        "symbols, and `find_symbol <name>` jumps to a definition and its "
+        "callers — faster and cheaper than grepping or reading whole files. "
+        "Then make focused changes: write_file for new files, apply_diff for "
+        "small edits, edit_symbol to rewrite a whole function/class by name, "
+        "delete_file to remove. Verify with run_shell when you can.\n"
+        "- An edit result may carry automatic feedback: a `⚠` syntax error you "
+        "just introduced (fix it before moving on) or a `↔` note listing the "
+        "callers of a symbol you changed or removed (go check them). Act on it.\n"
         "- Build the COMPLETE solution, not a stub: create every source file, "
         "config, entry point, and test the goal needs. Don't stop after one "
         "file. After writing code, run it (run_shell / start_background) to "
@@ -161,8 +169,10 @@ def _system_prompt(ctx: Context, memory: str = "") -> str:
         "  Up to 4 options per question (an 'Other' choice is added "
         "automatically); you may ask a few at once. Don't overuse it — only for "
         "decisions that materially change the outcome.\n"
-        "- For any multi-step task, keep a short checklist with update_todos: set "
-        "it up front and flip items to 'doing'/'done' as you progress.\n"
+        "- For a multi-step task, set up a short checklist ONCE with update_todos, "
+        "then call it again only when you start or finish a step (flip a single "
+        "item to 'doing'/'done') — not after every action, and never re-send an "
+        "unchanged list.\n"
         "  <tool_call name=\"update_todos\">{\"todos\": [{\"text\": \"Scaffold the app\", "
         "\"status\": \"doing\"}, {\"text\": \"Add tests\", \"status\": \"todo\"}]}</tool_call>\n"
         "  status is one of: todo | doing | done.\n"
@@ -249,21 +259,32 @@ def _verb_for(name: str, existed: bool) -> str:
     if name == "write_file":
         return "Updated" if existed else "Created"
     return {
-        "apply_diff": "Edited", "delete_file": "Deleted", "read_file": "Read",
-        "list_dir": "Listed", "grep": "Searched", "find_files": "Searched",
-        "glob": "Searched", "run_shell": "Ran", "start_background": "Started",
+        "apply_diff": "Edited", "edit_symbol": "Edited", "delete_file": "Deleted",
+        "read_file": "Read", "list_dir": "Listed", "grep": "Searched",
+        "find_files": "Searched", "glob": "Searched", "run_shell": "Ran",
+        "repo_map": "Mapped", "outline": "Outlined", "find_symbol": "Looked up",
+        "web_fetch": "Fetched", "start_background": "Started",
         "check_background": "Checked task", "wait_background": "Waited on task",
         "kill_background": "Killed task", "list_background": "Listed tasks",
     }.get(name, f"Used {name}")
 
 
 def _target_for(name: str, args: dict[str, Any]) -> str:
-    if name in {"write_file", "apply_diff", "delete_file", "read_file"}:
+    if name in {"write_file", "apply_diff", "delete_file", "read_file", "outline"}:
         return str(args.get("path", ""))
+    if name == "edit_symbol":
+        return f"{args.get('symbol', '')} in {args.get('path', '')}".strip()
+    if name == "find_symbol":
+        return str(args.get("name", ""))
+    if name == "web_fetch":
+        return str(args.get("url", ""))
+    if name == "repo_map":
+        return str(args.get("focus", "")) or "the codebase"
     if name == "list_dir":
         return str(args.get("path", "."))
     if name in {"grep", "find_files", "glob"}:
-        return str(args.get("pattern", ""))
+        pat = str(args.get("pattern", ""))
+        return pat if len(pat) <= 48 else pat[:47].rstrip() + "…"
     if name == "run_shell":
         return str(args.get("cmd", args.get("command", "")))
     if name == "start_background":
@@ -271,15 +292,20 @@ def _target_for(name: str, args: dict[str, Any]) -> str:
     return str(args.get("task_id", ""))
 
 
-def _edit_diff(args: dict[str, Any], max_lines: int = 6) -> str:
-    """A tiny -old/+new diff for an apply_diff edit, for the compact view."""
-    old = str(args.get("old", ""))
-    new = str(args.get("new", ""))
-    if not old and not new:
-        return ""
-    lines = [f"-{ln}" for ln in old.splitlines()[:max_lines]]
-    lines += [f"+{ln}" for ln in new.splitlines()[:max_lines]]
-    return "\n".join(lines)
+def _diff_stat(args: dict[str, Any]) -> tuple[int, int]:
+    """(added, removed) line counts for an apply_diff edit — a compact summary
+    instead of dumping the code. The full change is viewable with /diff."""
+    import difflib
+
+    old = str(args.get("old", "")).splitlines()
+    new = str(args.get("new", "")).splitlines()
+    added = removed = 0
+    for ln in difflib.unified_diff(old, new, n=0):
+        if ln.startswith("+") and not ln.startswith("+++"):
+            added += 1
+        elif ln.startswith("-") and not ln.startswith("---"):
+            removed += 1
+    return added, removed
 
 
 # Tools whose (successful) output is worth showing as a short collapsed tail.
@@ -430,11 +456,18 @@ def execute(
         calls = _parse_calls(text)
         done = _DONE_RE.search(text)
 
-        # Answer-only step (no tool calls) → it's a reply/summary to the user, so
-        # show it in full. A step that also calls tools → just a short lead-in.
-        narration = _narration(text, limit=4000 if not calls else 320)
-        if narration:
-            console.print(f"[agent]{narration}[/agent]")
+        # A prose-only step (no tool calls) is a reply/summary to the user → show
+        # it in full, in the agent voice. A step that also acts → keep the prose
+        # to a short, dim lead-in so the action lines clearly dominate.
+        if calls:
+            lead = _narration(text, limit=160)
+            if lead:
+                console.print(f"[hint]{lead}[/hint]")
+            narration = ""
+        else:
+            narration = _narration(text, limit=4000)
+            if narration:
+                console.print(f"[agent]{narration}[/agent]")
 
         if not calls:
             if done:
@@ -475,10 +508,12 @@ def execute(
                 result_blocks.append(f'<tool_result name="ask_user">{body}</tool_result>')
                 continue
 
-            # update_todos maintains the agent's visible checklist.
+            # update_todos maintains the agent's visible checklist. We only
+            # render what changed (and nothing for a no-op call).
             if name == "update_todos":
-                latest_todos = _coerce_todos(args)
-                _ui.render_todos(console, latest_todos)
+                new_todos = _coerce_todos(args)
+                _ui.render_todos(console, new_todos, latest_todos)
+                latest_todos = new_todos
                 result_blocks.append('<tool_result name="update_todos">todo list updated</tool_result>')
                 continue
 
@@ -501,21 +536,29 @@ def execute(
             existed = name == "write_file" and (Path(session.cwd) / str(args.get("path", ""))).exists()
             ok, body = _run_one(name, raw_args, allow)
 
+            # A shell command that ran but exited nonzero is a failure, even
+            # though the tool call itself didn't raise — don't show a green ✓.
+            shown_ok = ok
+            if ok and name in {"run_shell", "start_background"}:
+                m = re.search(r"\[exit (\d+)\]", body)
+                if m and m.group(1) != "0":
+                    shown_ok = False
+
             verb = _verb_for(name, existed)
             target = _target_for(name, args)
-            diff = _edit_diff(args) if (name == "apply_diff" and ok) else ""
-            show_output = (not ok) or name in _SHOW_OUTPUT or name.startswith(("browser_", "desktop_"))
+            diffstat = _diff_stat(args) if (name == "apply_diff" and ok) else None
+            show_output = (not shown_ok) or name in _SHOW_OUTPUT or name.startswith(("browser_", "desktop_"))
             _ui.render_action(
-                console, verb=verb, target=target, ok=ok, diff=diff,
+                console, verb=verb, target=target, ok=shown_ok, diffstat=diffstat,
                 output=body if show_output else "",
             )
-            actions_log.append(f"{verb} {target}".strip() + ("" if ok else " (failed)"))
+            actions_log.append(f"{verb} {target}".strip() + ("" if shown_ok else " (failed)"))
             if ok and name in _MUTATING:
                 path = args.get("path")
                 if path and path not in touched:
                     touched.append(path)
             fed = body if len(body) <= _RESULT_FEEDBACK_CAP else body[:_RESULT_FEEDBACK_CAP] + "\n…(truncated)"
-            err_attr = "" if ok else ' error="true"'
+            err_attr = "" if shown_ok else ' error="true"'
             result_blocks.append(f'<tool_result name="{name}"{err_attr}>{fed}</tool_result>')
 
         messages.append({"role": "assistant", "content": text})
