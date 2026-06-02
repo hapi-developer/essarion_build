@@ -328,13 +328,35 @@ def render_usage_line(
         )
 
 
+def _git_branch(cwd: str) -> str | None:
+    """Current git branch for `cwd` — best-effort, never raises. None if `cwd`
+    isn't a git repo or git is unavailable."""
+    import subprocess
+
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=cwd, capture_output=True, text=True, timeout=2, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    branch = (out.stdout or "").strip()
+    return branch or None
+
+
 def render_footer(console: Console, session: Session) -> None:
-    """A persistent-feeling status line printed at the end of each turn."""
+    """A persistent-feeling status line printed at the end of each turn.
+
+    Surfaces the active integrations Gemini puts in its footer — model, git
+    branch, sandbox cwd — alongside the cost/token/turn accounting."""
     pct = session.budget_used_pct() * 100.0
     style = "cost.under" if pct < 60 else ("cost.warn" if pct < 90 else "cost.over")
     pieces: list[tuple[str, str]] = [
         ("model ", "meta"),
         (f"{session.provider}/{session.model}", "brand"),
+        ("  ·  ", "meta"),
+        ("effort ", "meta"),
+        (f"{session.effort}", "brand"),
         ("  ·  ", "meta"),
     ]
     if session.budget_usd and session.budget_usd > 0:
@@ -373,8 +395,45 @@ def render_footer(console: Console, session: Session) -> None:
             ])
     except Exception:  # noqa: BLE001 - footer never crashes
         pass
+    # Git branch (sandbox/integration context), best-effort.
+    try:
+        branch = _git_branch(session.cwd)
+        if branch:
+            pieces.extend([("  ·  ", "meta"), ("git ", "meta"), (branch, "brand")])
+    except Exception:  # noqa: BLE001 - footer never crashes
+        pass
     console.print(Text.assemble(*pieces))
     console.print(Rule(style="brand.dim"))
+
+
+def render_second_opinion(console: Console, op) -> None:
+    """Render a cross-model second opinion — quiet agreement, or the concrete
+    concerns a different model raised about the change."""
+    model = op.model or "reviewer"
+    if not op.ok:
+        console.print(f"[meta]🔎 second opinion ({model}) unavailable: {op.error}[/meta]")
+        return
+    if op.agree and not op.concerns:
+        line = f"[ok]🔎 second opinion[/ok] [meta]({model}): agrees — safe to ship[/meta]"
+        if op.summary:
+            line += f" [meta]· {op.summary}[/meta]"
+        console.print(line)
+        return
+    from rich.panel import Panel
+
+    verdict = "disagrees" if not op.agree else "flags concerns"
+    style = "err" if not op.agree else "warn"
+    body = [f"[{style}]•[/{style}] {c}" for c in op.concerns[:8]]
+    if len(op.concerns) > 8:
+        body.append(f"[meta]…(+{len(op.concerns) - 8} more)[/meta]")
+    if op.summary:
+        body.append("")
+        body.append(f"[meta]{op.summary}[/meta]")
+    console.print(Panel(
+        "\n".join(body) or "[meta](no specifics given)[/meta]",
+        title=f"[{style}]🔎 second opinion ({model}) — {verdict}[/{style}]",
+        border_style=style, padding=(0, 1),
+    ))
 
 
 def drain_background_notices(console: Console) -> None:

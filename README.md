@@ -102,10 +102,14 @@ classic **plan → approve → hand-apply** flow:
    also remembers the conversation, so "what did you just do?" or "how do I
    reach the server?" are answered from memory, and it can **ask you
    multiple-choice questions** mid-task when something's genuinely ambiguous.
-3. **Token meter, no forced budget.** Every turn shows tokens + cost (and
-   cache hits); there's **no spending cap by default**. Set one any time with
-   `/budget` (it'll prompt) or `--budget 5`, and `/cost <path>` estimates a
-   hypothetical context before you send it.
+3. **Token meter + a cap that actually holds.** Every turn shows tokens + cost
+   (and cache hits); there's **no spending cap by default**. Set one with
+   `/budget` (it'll prompt) or `--budget 5`. When a cap is set the autonomous
+   loop **pre-estimates the next step and stops before crossing it** (not after
+   the call is billed), and **finalizes with a grounded summary of findings so
+   far** rather than stopping empty-handed. An **exploration budget**
+   (`--read-cap`, default 25) stops the "reads forever, answers never" failure.
+   `/cost <path>` estimates a hypothetical context before you send it.
 3. **Guardrails + a live checklist.** Catastrophic commands (`rm -rf /`,
    `mkfs`, fork bombs) are always refused and risky ones (`sudo`, force-push,
    `curl | sh`) prompt for approval — tune it under `[permissions]` in
@@ -115,9 +119,21 @@ classic **plan → approve → hand-apply** flow:
 3. **Smart skill selection.** The 54 bundled skills aren't all loaded
    every turn — a fast keyword picker chooses the 3-5 most relevant
    ones. Big context savings on every call.
-4. **Multi-model arbitrage.** Plan + selfcheck on a cheap model;
-   `--escalate <bigger-model>` only kicks in if selfcheck rejects.
-   Cheap by default, smart when it matters.
+4. **Multi-model arbitrage (both directions).** Plan + selfcheck on a cheap
+   model; `--escalate <bigger-model>` kicks in only if selfcheck rejects. And
+   `--triage-model <cheap>` **de-escalates** the throwaway `effort=auto` routing
+   call to a pennies model, so you can keep a *capable* default for the real
+   reasoning at near-zero routing cost. Cheap by default, smart when it matters.
+5. **Cross-model second opinion — no other coding agent ships this.** Turn on
+   `/crosscheck <model>` (ideally a *different* family) and an INDEPENDENT model
+   red-teams every change before it lands — seeing only the goal + the diff, so a
+   review is a few hundred tokens. Different models have different blind spots, so
+   **where they disagree is where bugs hide**: Essarion surfaces the specific
+   concerns (file · symbol · why) and nudges you to `/fix` or `/undo`. Two pennies
+   models — one building, a different one cross-examining — catch what a single
+   model rubber-stamps. The cheap-ensemble take on "make cheap models reason like
+   a better one." (On OpenRouter, write on `openai/…` and review on `anthropic/…`
+   with one key.)
 5. **Project-aware.** `essarion init` creates `.essarion/{config.toml,
    sessions/, memory.md}` per repo. The agent auto-detects the project
    root from `.essarion/`, `.git/`, `pyproject.toml`, etc. Per-project
@@ -129,7 +145,10 @@ classic **plan → approve → hand-apply** flow:
    `<tool_call name="read_file">…</tool_call>` inside its plan; the agent
    runs the read-only tool (read_file, grep, glob, list_dir, find_files,
    repo_map, outline, find_symbol), folds the result back as a note, and
-   re-plans. Up to 3 rounds. No user friction.
+   re-plans. Up to 3 rounds. No user friction. You can also steer it yourself
+   with inline **`@path`** references — `@src/auth.py` attaches the file (and its
+   sibling test), `@src/` a directory. Large files are **windowed** (head + tail,
+   or around your search hits), so the end of a file is never silently dropped.
 7. **Background tasks.** `/bg npm run dev` runs in parallel. The agent
    keeps working; completion notices fire between turns. /quit cleanly
    kills non-detached tasks via SIGTERM → SIGKILL on the process group.
@@ -159,6 +178,9 @@ essarion                                  # interactive REPL
 essarion --task "review src/auth.py"      # one-shot non-interactive
 essarion --provider anthropic --model claude-sonnet-4-6
 essarion --budget 5.00 --escalate claude-sonnet-4-6   # cheap+escalate
+essarion --model anthropic/claude-sonnet-4-6 --triage-model openai/gpt-4o-mini  # capable+cheap routing
+essarion --crosscheck-model anthropic/claude-haiku-4-5   # a 2nd model reviews every change
+essarion --budget 1.00 --read-cap 15      # cap spend AND reading
 essarion --resume 20260528-195838-5e4b    # continue a saved session
 essarion --plan-first "harden the JWT check"  # opt out of autonomous mode
 essarion --skills all                     # load every skill (vs auto)
@@ -267,12 +289,17 @@ Type `/help` inside the agent for the categorized view. The headline ones:
 
 | Command | Description |
 |---|---|
-| `/model <p>/<m>` | switch provider/model mid-session |
+| `/model <p>/<m>` | switch provider/model mid-session (warns if the key isn't set) |
 | `/escalate <m>` | set escalation model (cheap → strong on reject) |
+| `/triage <m>` | cheap model for `effort=auto` routing only (de-escalation) |
+| `/crosscheck <m>` | a **different** model independently reviews every change (second opinion) |
 | `/budget [N]` | show or set USD budget |
 | `/cost` | session cost ledger (per turn + total) |
 | `/cost <path>` | estimate the cost of a turn against a path/dir |
 | `/stream [on\|off]` | toggle streamed draft output (token-by-token) |
+| `/reload` | hot-reload `.env` / config without restarting |
+| `/keys` | show which provider API keys are set |
+| `/keys set <p> [key]` | capture a provider key (hidden prompt); optionally save to `.env` |
 
 **skills & memory**
 
@@ -334,6 +361,12 @@ export OPENAI_API_KEY=sk-...
 export GEMINI_API_KEY=...
 # Ollama needs no key; runs locally
 ```
+
+**Prefer a `.env`?** Drop the key in a `.env` at your project root and it's
+**auto-loaded at startup** — no `export`, no restart (a shell-exported var still
+wins). Added a key while the REPL is open? `/reload` picks it up live, or
+`/keys set openrouter` captures one with a hidden prompt and offers to save it to
+`.env`. (Add `.env` to your `.gitignore`.)
 
 ## Quick start
 

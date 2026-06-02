@@ -59,6 +59,26 @@ def _add_agent_args(parser: argparse.ArgumentParser) -> None:
         help="model to escalate to when selfcheck rejects",
     )
     parser.add_argument(
+        "--triage-model",
+        dest="triage_model",
+        help="cheap model for the effort=auto routing call only (de-escalation); "
+        "real reasoning stays on --model",
+    )
+    parser.add_argument(
+        "--crosscheck-model",
+        dest="crosscheck_model",
+        help="a DIFFERENT model that independently reviews every change (cheap "
+        "cross-model second opinion); best with a different model family",
+    )
+    parser.add_argument(
+        "--read-cap",
+        dest="read_cap",
+        type=int,
+        default=0,
+        help="max read-only tool calls in one autonomous turn before the agent is "
+        "pushed to answer (default: 0 = use the built-in cap)",
+    )
+    parser.add_argument(
         "--skills",
         choices=["auto", "all", "none"],
         default="auto",
@@ -161,6 +181,15 @@ def _apply_project_config(
         args.max_tokens = int(defaults["max_tokens"])
     if args.escalate is None and "escalate_model" in agent_cfg:
         args.escalate = agent_cfg["escalate_model"] or None
+    if getattr(args, "triage_model", None) is None and "triage_model" in defaults:
+        args.triage_model = defaults["triage_model"] or None
+    if getattr(args, "crosscheck_model", None) is None and "crosscheck_model" in agent_cfg:
+        args.crosscheck_model = agent_cfg["crosscheck_model"] or None
+    if getattr(args, "read_cap", 0) == 0 and "read_cap" in agent_cfg:
+        try:
+            args.read_cap = int(agent_cfg["read_cap"])
+        except (TypeError, ValueError):
+            pass
     # `budget` and `skills` use argparse defaults so check against those.
     if args.budget == 0.0 and "budget" in agent_cfg:
         try:
@@ -209,6 +238,12 @@ def _initial_session(args: argparse.Namespace, project: Project) -> Session:
             s.model = args.model
         if args.escalate is not None:
             s.escalate_model = args.escalate or None
+        if getattr(args, "triage_model", None) is not None:
+            s.triage_model = args.triage_model or None
+        if getattr(args, "crosscheck_model", None) is not None:
+            s.crosscheck_model = args.crosscheck_model or None
+        if getattr(args, "read_cap", 0):
+            s.read_cap = args.read_cap
         if args.skills:
             s.skills_mode = args.skills
         if args.effort:
@@ -239,6 +274,9 @@ def _initial_session(args: argparse.Namespace, project: Project) -> Session:
         provider=args.provider or cfg.provider,
         model=args.model or cfg.model,
         escalate_model=args.escalate or None,
+        triage_model=getattr(args, "triage_model", None) or cfg.triage_model,
+        crosscheck_model=getattr(args, "crosscheck_model", None) or None,
+        read_cap=getattr(args, "read_cap", 0) or 0,
         max_tokens=args.max_tokens or cfg.max_tokens,
         budget_usd=args.budget,
         skills_mode=args.skills,
@@ -305,12 +343,21 @@ def run_agent(argv: list[str] | None = None) -> int:
         # Only auto-anchor when the user didn't pass --cwd explicitly.
         args.cwd = str(project.root)
 
+    # Auto-load .env (project root + cwd) so a key sitting there just works —
+    # no `export`, no restart. Non-overriding: a shell-exported var still wins.
+    from ._dotenv import default_env_paths, load_dotenv_files
+
+    loaded_env = load_dotenv_files(default_env_paths(args.cwd, project.root), override=False)
+
     # Fold any project-level config defaults into args.
     _apply_project_config(args, project)
 
     session = _initial_session(args, project)
 
     console = make_console()
+    if loaded_env:
+        shown = ", ".join(loaded_env[:8]) + ("…" if len(loaded_env) > 8 else "")
+        console.print(f"[meta].env loaded:[/meta] [key]{shown}[/key]")
     bind_tools(session.cwd)
     _register_sdk_tools()  # makes <tool_call> available across the SDK
 

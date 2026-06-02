@@ -33,6 +33,7 @@ from .. import (
 )
 from .. import workflows
 from .._context import RepoFile
+from .._windowing import head_tail_window
 from ._session import (
     Session,
     TaskTurn,
@@ -46,6 +47,11 @@ from ._commands import dispatch as dispatch_command
 # Regex that finds path-shaped tokens in a user message. Used by the
 # auto-attach step to load files the user clearly wants the agent to see.
 _PATH_RE = re.compile(r"(?:\b|^)([\w/._-]+\.(?:py|ts|tsx|js|jsx|md|sql|toml|yml|yaml|json|rs|go|java|kt|rb|sh))(?:\b|$)")
+# Inline `@path` references (Gemini / Claude-Code style): `@src/auth.py`, `@src/`.
+# The lookbehind skips e-mail addresses (`user@host`) — the `@` must follow a
+# non-word, non-`@` char. Lets a user steer exploration explicitly, including
+# files whose extension `_PATH_RE` doesn't enumerate.
+_AT_PATH_RE = re.compile(r"(?<![\w@])@([\w./-]+)")
 
 
 def _related_paths(rel: str, cwd: Path) -> list[str]:
@@ -112,34 +118,33 @@ _DIR_RE = re.compile(r"(?:\b|^)((?:[\w._-]+/)+)(?:\b|$|\s)")
 _DIR_AUTOLOAD_MAX = 8
 
 
-def _autoload_files(task: str, cwd: Path, ctx: Context, console) -> list[str]:
-    """If the user names any files or directories in their task, load them
-    into the context.
+# Directory names we never auto-attach files from.
+_DIR_SKIP_PARTS = {".git", "__pycache__", "node_modules", ".venv", "venv", "dist", "build"}
 
-    Files mentioned by name (`src/auth.py`) attach individually.
-    Directories mentioned (`src/auth/`) attach up to `_DIR_AUTOLOAD_MAX`
-    files from inside.
+
+def _attach_one_file(
+    rel: str, cwd: Path, ctx: Context, loaded: list[str], seen_paths: set[str],
+    *, with_siblings: bool = True,
+) -> bool:
+    """Attach a single file (windowed) and, optionally, its sibling test file.
+
+    Returns True if the file was attached. The sibling auto-load is the
+    "review src/auth.py" → also load "tests/test_auth.py" trick that makes
+    review and fix-bug workflows much smarter.
     """
-    loaded: list[str] = []
-    seen_paths: set[str] = set()
-
-    for match in _PATH_RE.finditer(task):
-        rel = match.group(1)
-        path = cwd / rel
-        if not path.is_file() or rel in seen_paths:
-            continue
-        try:
-            content = path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
-            continue
-        if len(content) > 200_000:
-            content = content[:200_000] + "\n... (truncated)"
-        ctx.repo_files.append(RepoFile(path=rel, content=content))
-        loaded.append(rel)
-        seen_paths.add(rel)
-        # Also auto-load the related test file if it exists. This is the
-        # "review src/auth.py" → also load "tests/test_auth.py" hack that
-        # makes review and fix-bug workflows much smarter.
+    if rel in seen_paths:
+        return False
+    path = cwd / rel
+    if not path.is_file():
+        return False
+    try:
+        content = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return False
+    ctx.repo_files.append(RepoFile(path=rel, content=head_tail_window(content, max_chars=200_000)))
+    loaded.append(rel)
+    seen_paths.add(rel)
+    if with_siblings:
         for sibling in _related_paths(rel, cwd):
             if sibling in seen_paths:
                 continue
@@ -150,43 +155,72 @@ def _autoload_files(task: str, cwd: Path, ctx: Context, console) -> list[str]:
                 sibling_content = sp.read_text(encoding="utf-8")
             except (OSError, UnicodeDecodeError):
                 continue
-            if len(sibling_content) > 100_000:
-                sibling_content = sibling_content[:100_000] + "\n... (truncated)"
-            ctx.repo_files.append(RepoFile(path=sibling, content=sibling_content))
+            ctx.repo_files.append(
+                RepoFile(path=sibling, content=head_tail_window(sibling_content, max_chars=100_000))
+            )
             loaded.append(sibling)
             seen_paths.add(sibling)
+    return True
 
-    # Directory references — attach the first N files inside, skipping VCS/build dirs.
-    skip_parts = {".git", "__pycache__", "node_modules", ".venv", "venv", "dist", "build"}
-    for match in _DIR_RE.finditer(task):
-        rel = match.group(1).rstrip("/")
-        d = cwd / rel
-        if not d.is_dir():
+
+def _attach_dir(rel: str, cwd: Path, ctx: Context, loaded: list[str], seen_paths: set[str]) -> None:
+    """Attach the first `_DIR_AUTOLOAD_MAX` files from a referenced directory,
+    skipping VCS/build dirs."""
+    d = cwd / rel
+    if not d.is_dir():
+        return
+    count_for_dir = 0
+    for p in sorted(d.rglob("*")):
+        if not p.is_file() or any(part in _DIR_SKIP_PARTS for part in p.parts):
             continue
-        count_for_dir = 0
-        for p in sorted(d.rglob("*")):
-            if not p.is_file():
-                continue
-            if any(part in skip_parts for part in p.parts):
-                continue
-            try:
-                rel_p = p.relative_to(cwd).as_posix()
-            except ValueError:
-                continue
-            if rel_p in seen_paths:
-                continue
-            try:
-                content = p.read_text(encoding="utf-8")
-            except (OSError, UnicodeDecodeError):
-                continue
-            if len(content) > 100_000:
-                content = content[:100_000] + "\n... (truncated)"
-            ctx.repo_files.append(RepoFile(path=rel_p, content=content))
-            loaded.append(rel_p)
-            seen_paths.add(rel_p)
-            count_for_dir += 1
-            if count_for_dir >= _DIR_AUTOLOAD_MAX:
-                break
+        try:
+            rel_p = p.relative_to(cwd).as_posix()
+        except ValueError:
+            continue
+        if rel_p in seen_paths:
+            continue
+        try:
+            content = p.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        ctx.repo_files.append(RepoFile(path=rel_p, content=head_tail_window(content, max_chars=100_000)))
+        loaded.append(rel_p)
+        seen_paths.add(rel_p)
+        count_for_dir += 1
+        if count_for_dir >= _DIR_AUTOLOAD_MAX:
+            break
+
+
+def _autoload_files(task: str, cwd: Path, ctx: Context, console) -> list[str]:
+    """If the user names any files or directories in their task, load them
+    into the context.
+
+    Three signals, highest first:
+    - `@path` references (`@src/auth.py`, `@src/`) — an explicit, Gemini-style
+      affordance that also works for files whose extension isn't enumerated.
+    - bare path-shaped tokens (`src/auth.py`) attach individually (+ sibling tests).
+    - directory references (`src/auth/`) attach up to `_DIR_AUTOLOAD_MAX` files.
+    """
+    loaded: list[str] = []
+    seen_paths: set[str] = set()
+
+    # 1. Explicit @path references first — the strongest "look at this" signal.
+    for match in _AT_PATH_RE.finditer(task):
+        rel = match.group(1).rstrip("/.,;:")
+        if not rel:
+            continue
+        if (cwd / rel).is_dir():
+            _attach_dir(rel, cwd, ctx, loaded, seen_paths)
+        else:
+            _attach_one_file(rel, cwd, ctx, loaded, seen_paths)
+
+    # 2. Bare path-shaped tokens (src/auth.py) + their sibling tests.
+    for match in _PATH_RE.finditer(task):
+        _attach_one_file(match.group(1), cwd, ctx, loaded, seen_paths)
+
+    # 3. Directory references — attach the first N files inside.
+    for match in _DIR_RE.finditer(task):
+        _attach_dir(match.group(1).rstrip("/"), cwd, ctx, loaded, seen_paths)
 
     if loaded:
         console.print(
@@ -323,7 +357,8 @@ def _make_runtime(provider: str, model: str) -> LiteRuntime:
     """Build a fresh runtime each turn so the agent picks up /model swaps.
 
     Wraps the underlying builder so a missing API key becomes a typed,
-    actionable error instead of a generic RuntimeError.
+    actionable error instead of a generic RuntimeError. This is the seam tests
+    patch; cheap-triage de-escalation is layered on top in `_runtime_for`.
     """
     try:
         prov = build_provider(name=provider, api_key=None, model=model)
@@ -332,6 +367,33 @@ def _make_runtime(provider: str, model: str) -> LiteRuntime:
         # — wrap so the agent path can surface a friendlier message.
         raise _MissingKeyError(str(e)) from e
     return LiteRuntime(prov)
+
+
+def _attach_triage(runtime: Any, session: Session) -> None:
+    """Point the runtime's triage call at the session's cheap model, if set.
+
+    A no-op when no triage model is configured (or it equals the main model), or
+    when the runtime doesn't expose a triage seam — so a stubbed/patched runtime
+    in tests is left untouched. Triage is an optimization; failures fall back to
+    the main model rather than breaking the turn.
+    """
+    tm = getattr(session, "triage_model", None)
+    if not tm or tm == session.model or not hasattr(runtime, "_triage_provider"):
+        return
+    try:
+        runtime._triage_provider = build_provider(
+            name=session.provider, api_key=None, model=tm
+        )
+    except Exception:  # noqa: BLE001 - triage is an optimization, never fatal
+        pass
+
+
+def _runtime_for(session: Session, *, model: str | None = None) -> LiteRuntime:
+    """The runtime for a reason()/generate() call: the main provider (via the
+    `_make_runtime` seam) with the session's cheap triage model attached."""
+    rt = _make_runtime(session.provider, model or session.model)
+    _attach_triage(rt, session)
+    return rt
 
 
 class _MissingKeyError(RuntimeError):
@@ -381,7 +443,7 @@ def _run_plan_phase(
                 return reason(
                     task,
                     context=ctx,
-                    _runtime=_make_runtime(session.provider, session.model),
+                    _runtime=_runtime_for(session),
                     max_tokens=session.max_tokens,
                     effort=session.effort,
                 )
@@ -498,7 +560,7 @@ def _run_draft_phase(
                 g = generate(
                     task,
                     context=ctx,
-                    _runtime=_make_runtime(session.provider, session.model),
+                    _runtime=_runtime_for(session),
                     max_tokens=session.max_tokens,
                     effort=session.effort,
                 )
@@ -525,7 +587,7 @@ def _run_draft_phase(
                 g2 = generate(
                     task,
                     context=ctx,
-                    _runtime=_make_runtime(session.provider, session.escalate_model),
+                    _runtime=_runtime_for(session, model=session.escalate_model),
                     max_tokens=session.max_tokens,
                     effort=session.effort,
                 )
@@ -540,6 +602,38 @@ def _run_draft_phase(
     return g
 
 
+def _run_crosscheck(console, session: Session, goal: str, change_text: str, turn: TaskTurn):
+    """Cheap cross-model second opinion on a change. Returns a SecondOpinion or
+    None (off / nothing to review / unaffordable). Charges the turn's meter.
+
+    An INDEPENDENT model (ideally a different family, on the same provider) is
+    handed only the goal + the diff and asked to find what's wrong. Where it
+    disagrees with the model that wrote the change is where bugs hide.
+    """
+    model = getattr(session, "crosscheck_model", None)
+    if not model or not (change_text or "").strip():
+        return None
+    if session.budget_usd:
+        remaining = session.budget_usd - session.total_cost_usd - turn.cost_usd
+        if remaining <= 0:
+            console.print("[meta]🔎 second opinion skipped (budget reached).[/meta]")
+            return None
+    try:
+        provider = build_provider(name=session.provider, api_key=None, model=model)
+    except Exception as e:  # noqa: BLE001 - a failed review must never break a turn
+        console.print(f"[warn]🔎 second opinion skipped — {type(e).__name__}: {e}[/warn]")
+        return None
+    from ._crosscheck import request_second_opinion
+
+    with console.status(f"[brand]🔎 second opinion from {model}…[/brand]", spinner="line"):
+        op = request_second_opinion(provider, goal=goal, change=change_text, model=model)
+    op.cost_usd = estimate_cost_usd(session.provider, model, op.usage)
+    turn.usage = turn.usage + op.usage
+    turn.cost_usd += op.cost_usd
+    _ui.render_second_opinion(console, op)
+    return op
+
+
 def _apply_or_save(console, session: Session, turn: TaskTurn, code: str) -> None:
     """Offer to apply the code change. Tries to detect diffs vs raw code."""
     if not code.strip():
@@ -551,6 +645,9 @@ def _apply_or_save(console, session: Session, turn: TaskTurn, code: str) -> None
     else:
         _ui.render_code(console, code)
         kind = "code"
+
+    # Cheap cross-model second opinion on the proposed change before you decide.
+    _run_crosscheck(console, session, turn.task, code, turn)
 
     choice = _ui.prompt_approve_apply(console, kind=kind)
     if choice == "discard":
@@ -604,7 +701,7 @@ def _maybe_handle_workflow(
     body = task.split(":", 1)[1].strip() if ":" in task else ""
     if not body:
         body = task  # fall back: the model can pick up the verb from the task
-    runtime = _make_runtime(session.provider, session.model)
+    runtime = _runtime_for(session)
     _ui.render_phase_header(console, "plan")
     try:
         with console.status("[brand]workflow…[/brand]", spinner="line"):
@@ -1053,6 +1150,13 @@ def run_turn_autonomous(console, session: Session, task: str):
     if new_entries:
         created, edited, deleted = _classify_changes(new_entries)
         _ui.render_change_summary(console, created, edited, deleted)
+        # Cross-model second opinion on this turn's net diff (cheap-ensemble gate).
+        op = _run_crosscheck(console, session, task, log.diff_since(start), turn)
+        if op is not None and op.disagrees:
+            console.print(
+                "[hint]a second model flagged concerns above — "
+                "[key]/fix <note>[/key] to address them, or [key]/undo[/key].[/hint]"
+            )
 
     # 5. Auto-verify + suggestions + footer.
     _maybe_auto_verify(console, session, turn)

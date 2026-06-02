@@ -89,12 +89,26 @@ class Session(BaseModel):
     provider: str
     model: str
     escalate_model: str | None = None  # set on /escalate or auto-pick
+    # Cross-model "second opinion": an INDEPENDENT model (ideally a different
+    # family, runs on `provider`) that red-teams each change before it lands —
+    # seeing only the goal + the diff, so it's cheap. Where two models disagree
+    # is where bugs hide. None → off. Set with /crosscheck.
+    crosscheck_model: str | None = None
     stream: bool = False  # True → stream draft tokens to the console
     max_tokens: int = 4096
     # Spending cap in USD. 0.0 (the default) means NO cap — we just meter and
     # show tokens + cost. Set one with `/budget <amount>` to halt the turn when
     # projected spend would cross it.
     budget_usd: float = 0.0
+    # Exploration budget: max read-only tool calls (read_file/grep/…) in a single
+    # autonomous turn before the agent is pushed to stop gathering context and
+    # produce its answer/changes. 0 means "use the executor default". Guards
+    # against the "reads forever, answers never" budget-exhaustion failure.
+    read_cap: int = 0
+    # Cheap model used only for the throwaway triage/classification call when
+    # effort='auto'. None → triage runs on the main model. Lets a run keep a
+    # capable default for real reasoning while spending pennies on routing.
+    triage_model: str | None = None
     skills_mode: str = "auto"  # "auto" | "all" | "none"
     # Reasoning depth. The agent defaults to "auto" — a tiny triage call
     # sizes each task and routes to quick/standard/deep. Cheap on easy

@@ -7,6 +7,86 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Cost-and-quality release: stop the agent from burning a budget on reading
+before it answers, make the spending cap actually hold (and still return value
+when it's hit), and sharpen analysis with structural/security reasoning and
+file-grounded output. Headlined by **cross-model second opinion** — an
+independent, different model that red-teams every change for pennies — and
+**`.env` that just works**. All zero-dependency (standard library only).
+
+### Added
+
+- **Cross-model second opinion (`/crosscheck`, `--crosscheck-model`) — a feature
+  no mainstream coding agent ships.** A *different* model independently red-teams
+  every change before it lands, seeing only the goal and the diff (never the
+  repo, so it's cheap — a review is a few hundred tokens). Different model
+  families have different blind spots, so where the writer and the reviewer
+  **disagree is exactly where bugs hide** — Essarion surfaces the specific
+  concerns (file·symbol·why) and, in autonomous mode, nudges you to `/fix` or
+  `/undo`. This is the cheap-ensemble reading of the whole thesis: two *pennies*
+  models, one building and a different one cross-examining, catch what one model
+  rubber-stamps. Pairs naturally with cheap-triage routing and the budget cap.
+  Best with a different family on the same provider (e.g. write on `openai/...`,
+  review on `anthropic/...` — one OpenRouter key).
+- **`.env` just works.** A `.env` at the project root or cwd is now **auto-loaded
+  at startup** (non-overriding, so a shell-exported var still wins) — no
+  `export`, no restart. `/keys set <provider> [key]` captures a key for the
+  session (hidden prompt if you omit it) and can persist it to `.env` (with a
+  warning if `.env` isn't git-ignored). `/reload` re-reads it live. Key *names*
+  are reported, values never printed.
+- **Semantic windowing for large files (`_windowing.py`).** Truncation no longer
+  drops the *tail* of a file — the end (a `__main__` guard, a class's later
+  methods) is often where the load-bearing logic lives. `read_file` now accepts
+  a `pattern` to window around the matching lines *and the enclosing
+  function/class*; without one it keeps both the head and the tail. The same
+  head+tail windowing replaces the old head-only byte-slice everywhere a big
+  blob gets capped (auto-attached files, inline tool results, autonomous
+  tool-result feedback). Every elision is marked, so nothing is *silently* lost.
+- **Exploration budget for the autonomous loop.** After `read_cap` read-only
+  tool calls in a turn (default 25; set `--read-cap`, `[agent] read_cap`, or
+  `session.read_cap`), the agent is pushed to stop gathering context and produce
+  its answer/edits. This is the guard against the "reads forever, answers never"
+  failure where a strong model exhausts the budget on context-gathering alone.
+- **Cheap-triage de-escalation (tiered models).** The throwaway "how hard is
+  this task, 1-5?" routing call made for `effort=auto` can now run on a separate
+  cheap model while the real reasoning stays on your capable one — keep a strong
+  default at near-zero routing cost. Set it with `/triage <model>`,
+  `--triage-model`, `[defaults] triage_model`, `ESSARION_TRIAGE_MODEL`, or
+  `configure(triage_model=...)`.
+- **`/reload` — hot-reload credentials/config.** Re-reads `.env` (project root +
+  cwd) and `essarion.toml` without restarting, so a key you just added takes
+  effect on the next task. Removes the one rough edge where a missing API key
+  meant killing and relaunching the REPL. Key *names* are reported, never values.
+- **Inline `@path` file references.** `@src/auth.py` / `@src/` at the prompt
+  attach a file (and its sibling test) or a directory — an explicit, Gemini-style
+  way to steer exploration that also works for extension-less files (`@Makefile`)
+  the bare-path detector skips. E-mail addresses are not mistaken for paths.
+- **`/triage`, `/commands`.** `/triage` shows/sets the cheap routing model;
+  `/commands` lists every command (alias of `/help`).
+
+### Changed
+
+- **Budget enforcement now pre-estimates the next step and stops *before* it
+  crosses the cap**, instead of detecting the overage after an in-flight call is
+  already billed. It reserves headroom for a wrap-up: when the cap is reached the
+  autonomous run **finalizes with a short, grounded summary of findings so far**
+  (or a synthesized recap when there isn't even budget for that) rather than
+  stopping silently with nothing written. A cap is only useful if you still get
+  value when it's hit.
+- **Sharper analysis prompts.** The reasoning system prompt now applies three
+  structural lenses to non-trivial code — shared mutable state & concurrency,
+  trust boundaries (shell/subprocess/untrusted input), and resource lifecycle —
+  and the autonomous executor, on analysis/review tasks, deliberately sweeps the
+  security- and concurrency-sensitive files (tool execution, subprocess/shell,
+  shared global state, background/threaded code, raw-input paths), not just the
+  entrypoints. Every claim must cite a file and, where possible, a symbol or
+  line; output is kept dense and grounded rather than restating context.
+- **`/model` validates credentials on switch.** Switching to a provider whose key
+  isn't set warns *which* env var the route needs (and points at `/reload`),
+  instead of failing cryptically on the next task. `/keys` uses the same map.
+- **Footer surfaces more context** — reasoning effort and the git branch, next to
+  model and cost.
+
 ## [0.3.6] - 2026-06-01
 
 Code-intelligence release: give the model structural understanding of the

@@ -107,8 +107,14 @@ class LiteRuntime:
     drop tags more often than you'd like.
     """
 
-    def __init__(self, provider: Provider) -> None:
+    def __init__(self, provider: Provider, *, triage_provider: Provider | None = None) -> None:
         self._provider = provider
+        # Optional cheap model for the throwaway triage/classification call only
+        # (effort='auto'). De-escalating routing to a pennies model lets the run
+        # keep a capable model for the real reasoning without paying flagship
+        # prices to answer "how hard is this task, 1-5?". Falls back to the main
+        # provider when unset.
+        self._triage_provider = triage_provider or provider
 
     def _step(
         self,
@@ -190,8 +196,9 @@ class LiteRuntime:
         parsed.
         """
         triage_budget = min(budget, 256)
-        emit("phase_call", phase="triage", model=self._provider.model)
-        resp = self._provider.complete(
+        tp = self._triage_provider
+        emit("phase_call", phase="triage", model=tp.model)
+        resp = tp.complete(
             system=system,
             messages=[{"role": "user", "content": current_triage().format(task=task)}],
             max_tokens=triage_budget,
@@ -497,12 +504,27 @@ class CloudRuntime:
         )
 
 
+def _build_triage_provider(
+    *, name: str, api_key: str | None, model: str | None, triage_model: str | None
+) -> Provider | None:
+    """Build a cheap triage provider when one is configured and it differs from
+    the main model. Returns None (→ triage runs on the main model) on any error,
+    so a bad triage model can never break the real reasoning loop."""
+    if not triage_model or triage_model == model:
+        return None
+    try:
+        return build_provider(name=name, api_key=api_key, model=triage_model)
+    except Exception:  # noqa: BLE001 - triage is an optimization, never fatal
+        return None
+
+
 def select_runtime(
     *,
     runtime: str | None = None,
     provider: str | None = None,
     api_key: str | None = None,
     model: str | None = None,
+    triage_model: str | None = None,
 ) -> Runtime:
     """Resolve a Runtime from per-call kwargs falling back to module config."""
     cfg = current()
@@ -510,6 +532,7 @@ def select_runtime(
     chosen_provider = provider or cfg.provider
     chosen_api_key = api_key if api_key is not None else cfg.api_key
     chosen_model = model or cfg.model
+    chosen_triage_model = triage_model if triage_model is not None else cfg.triage_model
 
     if chosen_runtime == "cloud":
         return CloudRuntime(api_key=chosen_api_key, model=chosen_model)
@@ -517,7 +540,11 @@ def select_runtime(
         prov = build_provider(
             name=chosen_provider, api_key=chosen_api_key, model=chosen_model
         )
-        return LiteRuntime(prov)
+        triage_prov = _build_triage_provider(
+            name=chosen_provider, api_key=chosen_api_key,
+            model=chosen_model, triage_model=chosen_triage_model,
+        )
+        return LiteRuntime(prov, triage_provider=triage_prov)
     raise ValueError(
         f"Unknown runtime {chosen_runtime!r}. Expected 'lite' or 'cloud'."
     )

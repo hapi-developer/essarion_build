@@ -42,6 +42,10 @@ class _Config(BaseModel):
     provider: str = Field(default_factory=lambda: os.environ.get("ESSARION_PROVIDER") or DEFAULT_PROVIDER)
     api_key: str | None = None
     model: str = Field(default_factory=lambda: os.environ.get("ESSARION_MODEL") or DEFAULT_MODEL)
+    # Optional cheap model for the throwaway triage call only (effort='auto').
+    # None → triage runs on `model`. Lets a run keep a capable default for real
+    # reasoning while spending pennies on routing.
+    triage_model: str | None = Field(default_factory=lambda: os.environ.get("ESSARION_TRIAGE_MODEL") or None)
     max_tokens: int = Field(default_factory=lambda: _env_int("ESSARION_MAX_TOKENS", 4096), ge=1)
     effort: str = Field(default_factory=lambda: os.environ.get("ESSARION_EFFORT") or DEFAULT_EFFORT)
 
@@ -55,6 +59,7 @@ def configure(
     provider: str | None = None,
     api_key: str | None = None,
     model: str | None = None,
+    triage_model: str | None = None,
     max_tokens: int | None = None,
     effort: str | None = None,
 ) -> None:
@@ -70,6 +75,8 @@ def configure(
         _CONFIG.api_key = api_key
     if model is not None:
         _CONFIG.model = model
+    if triage_model is not None:
+        _CONFIG.triage_model = triage_model or None
     if max_tokens is not None:
         _CONFIG.max_tokens = max_tokens
     if effort is not None:
