@@ -25,13 +25,78 @@ from ._session import Session
 CommandResult = str  # "continue" | "quit"
 
 
+# Which environment variable(s) hold each provider's API key. Empty tuple → the
+# provider needs no key (local Ollama, the in-memory stub). Used to validate a
+# `/model` switch and to render `/keys`.
+_PROVIDER_ENVS: dict[str, tuple[str, ...]] = {
+    "openrouter": ("OPENROUTER_API_KEY",),
+    "anthropic": ("ANTHROPIC_API_KEY",),
+    "openai": ("OPENAI_API_KEY",),
+    "gemini": ("GEMINI_API_KEY", "GOOGLE_API_KEY"),
+    "ollama": (),
+    "stub": (),
+}
+
+
+def _load_dotenv(path) -> list[str]:
+    """Parse a ``.env`` file and set the variables into ``os.environ``.
+
+    Minimal, dependency-free: ``KEY=VALUE`` per line, ``#`` comments, an optional
+    ``export`` prefix, and surrounding single/double quotes stripped. Returns the
+    key NAMES loaded (never the values) so the caller can report without leaking
+    secrets.
+    """
+    import os
+    from pathlib import Path
+
+    keys: list[str] = []
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except OSError:
+        return keys
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export "):].lstrip()
+        key, sep, val = line.partition("=")
+        if not sep:
+            continue
+        key = key.strip()
+        val = val.strip().strip('"').strip("'")
+        if key:
+            os.environ[key] = val
+            keys.append(key)
+    return keys
+
+
+def _warn_if_key_missing(console: Console, provider: str) -> None:
+    """Warn (don't block) when the just-selected provider's key isn't in the env.
+
+    Switching from `openrouter` to `openai/...` silently needs a *different* key;
+    surfacing which one up front beats a cryptic auth failure on the next task."""
+    import os
+
+    envs = _PROVIDER_ENVS.get(provider)
+    if not envs:  # no key needed, or a custom provider we can't advise on
+        return
+    if any(os.environ.get(e) for e in envs):
+        return
+    console.print(
+        f"[warn]heads up:[/warn] [brand]{provider}[/brand] needs [key]{envs[0]}[/key], "
+        "which isn't set here. Export it — or add it to a .env file and run "
+        "[key]/reload[/key] — before your next task."
+    )
+
+
 _HELP_GROUPS: list[tuple[str, list[str]]] = [
     ("session", ["/whoami", "/history", "/summary", "/save", "/load", "/export", "/clear", "/version", "/quit"]),
     ("autonomy", ["/goal"]),
     ("planning", ["/ask"]),
     ("workflows", ["/workflows", "/review", "/fix", "/tests", "/refactor", "/docs", "/security", "/perf", "/explain", "/pr"]),
     ("reasoning", ["/effort"]),
-    ("models & cost", ["/model", "/escalate", "/budget", "/cost", "/stream", "/keys"]),
+    ("models & cost", ["/model", "/escalate", "/triage", "/budget", "/cost", "/stream", "/keys", "/reload"]),
     ("skills & memory", ["/skills", "/remember", "/forget"]),
     ("project & files", ["/cd", "/pwd"]),
     ("code intelligence", ["/map", "/outline", "/symbol"]),
@@ -156,6 +221,8 @@ def _cmd_model(console: Console, session: Session, args: str) -> CommandResult:
             f"[meta]current:[/meta] [brand]{session.provider}/{session.model}[/brand]"
             + (f"  [meta](escalate to {session.escalate_model})[/meta]"
                if session.escalate_model else "")
+            + (f"  [meta](triage on {session.triage_model})[/meta]"
+               if session.triage_model else "")
         )
         console.print(
             f"[hint]usage: /model <provider>/<model>  e.g. /model openai/gpt-4o-mini[/hint]"
@@ -173,6 +240,40 @@ def _cmd_model(console: Console, session: Session, args: str) -> CommandResult:
     session.provider = provider
     session.model = model
     console.print(f"[ok]model set to {provider}/{model}[/ok]")
+    _warn_if_key_missing(console, provider)
+    return "continue"
+
+
+def _cmd_triage(console: Console, session: Session, args: str) -> CommandResult:
+    """Show or set the cheap triage model — the throwaway 'how hard is this task?'
+    routing call made only when effort='auto'. De-escalating it to a pennies
+    model keeps a capable default for the real reasoning at near-zero routing cost.
+
+    Usage:
+      /triage                 show the current triage model
+      /triage <model>         route the auto triage call through <model>
+      /triage off             run triage on the main model
+    """
+    args = args.strip()
+    if not args:
+        if session.triage_model:
+            console.print(
+                f"[meta]triage model:[/meta] [brand]{session.triage_model}[/brand] "
+                "[meta](used only for effort=auto routing)[/meta]"
+            )
+        else:
+            console.print("[meta]no triage model set — routing runs on the main model[/meta]")
+        console.print("[hint]usage: /triage <model>  ·  /triage off[/hint]")
+        return "continue"
+    if args.lower() in {"off", "none", "clear"}:
+        session.triage_model = None
+        console.print("[ok]triage de-escalation off — routing uses the main model[/ok]")
+        return "continue"
+    session.triage_model = args
+    console.print(
+        f"[ok]auto-triage routing → {args}[/ok] "
+        f"[meta](real reasoning stays on {session.model})[/meta]"
+    )
     return "continue"
 
 
@@ -865,32 +966,81 @@ def _cmd_keys(console: Console, session: Session, args: str) -> CommandResult:
 
     from .. import list_providers
 
-    PROVIDER_ENVS = {
-        "openrouter": "OPENROUTER_API_KEY",
-        "anthropic": "ANTHROPIC_API_KEY",
-        "openai": "OPENAI_API_KEY",
-        "gemini": "GEMINI_API_KEY",
-        "ollama": "(no key needed)",
-        "stub": "(no key needed)",
-    }
     table = Table(title="provider keys", title_style="brand")
     table.add_column("provider", style="key")
     table.add_column("env var", style="meta")
     table.add_column("set?")
     for prov in list_providers():
-        env_var = PROVIDER_ENVS.get(prov, "(unknown)")
-        if env_var.startswith("("):
-            status = f"[meta]{env_var}[/meta]"
+        envs = _PROVIDER_ENVS.get(prov)
+        if envs is None:
+            env_label, status = "(unknown)", "[meta](unknown)[/meta]"
+        elif not envs:
+            env_label, status = "(no key needed)", "[meta](no key needed)[/meta]"
         else:
-            # Also accept GOOGLE_API_KEY for Gemini.
-            alt = "GOOGLE_API_KEY" if prov == "gemini" else None
-            present = os.environ.get(env_var) or (alt and os.environ.get(alt))
-            status = f"[ok]yes[/ok]" if present else f"[err]no[/err]"
-        marker = ""
-        if prov == session.provider:
-            marker = " [hint]← current[/hint]"
-        table.add_row(prov, env_var, status + marker)
+            env_label = " / ".join(envs)
+            status = "[ok]yes[/ok]" if any(os.environ.get(e) for e in envs) else "[err]no[/err]"
+        marker = " [hint]← current[/hint]" if prov == session.provider else ""
+        table.add_row(prov, env_label, status + marker)
     console.print(table)
+    console.print("[hint]added a key to .env? run [key]/reload[/key] to pick it up without restarting.[/hint]")
+    return "continue"
+
+
+def _cmd_reload(console: Console, session: Session, args: str) -> CommandResult:
+    """Hot-reload credentials/config without restarting the REPL.
+
+    Re-reads `.env` (project root + cwd) into the environment and re-applies
+    `essarion.toml` defaults, so a key you just added — or a default you
+    changed — takes effect on the next task. No restart, no lost session state.
+    This removes the one rough edge where a missing API key meant killing and
+    relaunching the agent.
+    """
+    import os
+    from pathlib import Path
+
+    from ._project import find_project_root
+
+    loaded: list[str] = []
+    seen: set[str] = set()
+    project = find_project_root(session.cwd)
+    candidates = [Path(session.cwd) / ".env"]
+    if project.root and Path(project.root) != Path(session.cwd):
+        candidates.append(Path(project.root) / ".env")
+    found_any = False
+    for env_path in candidates:
+        if env_path.is_file():
+            found_any = True
+            for k in _load_dotenv(env_path):
+                if k not in seen:
+                    seen.add(k)
+                    loaded.append(k)
+            console.print(f"[ok]reloaded[/ok] [brand]{env_path}[/brand]")
+
+    # Re-read config-file defaults (provider/model/triage/max_tokens). These feed
+    # the SDK defaults; the active session keeps the model you chose.
+    try:
+        from .._config_file import load_config_file
+
+        _data, used = load_config_file()
+        if used:
+            console.print(f"[meta]reloaded config defaults from[/meta] {used}")
+    except Exception as e:  # noqa: BLE001 - config reload is best-effort
+        console.print(f"[warn]config reload skipped: {type(e).__name__}: {e}[/warn]")
+
+    if loaded:
+        console.print(
+            "[meta]env keys now set:[/meta] " + ", ".join(f"[key]{k}[/key]" for k in loaded)
+        )
+    elif not found_any:
+        console.print("[meta]no .env file found at the project root or cwd — nothing to reload.[/meta]")
+
+    # Tell the user plainly whether the *current* provider is now usable.
+    envs = _PROVIDER_ENVS.get(session.provider)
+    if envs:
+        if any(os.environ.get(e) for e in envs):
+            console.print(f"[ok]{session.provider} key is set — ready for the next task.[/ok]")
+        else:
+            _warn_if_key_missing(console, session.provider)
     return "continue"
 
 
@@ -1028,7 +1178,8 @@ def _cmd_whoami(console: Console, session: Session, args: str) -> CommandResult:
     table.add_row(
         "model",
         f"{session.provider}/[brand]{session.model}[/brand]"
-        + (f"  [meta]escalate→[/meta] {session.escalate_model}" if session.escalate_model else ""),
+        + (f"  [meta]escalate→[/meta] {session.escalate_model}" if session.escalate_model else "")
+        + (f"  [meta]triage→[/meta] {session.triage_model}" if session.triage_model else ""),
     )
     table.add_row(
         "skills",
@@ -1259,6 +1410,7 @@ COMMANDS: dict[str, tuple[Callable, str]] = {
     "/budget": (_cmd_budget, "show cost so far, or set a spending cap (no cap by default)"),
     "/model": (_cmd_model, "show or set the provider/model"),
     "/escalate": (_cmd_escalate, "set or clear the escalation model"),
+    "/triage": (_cmd_triage, "set the cheap model for effort=auto routing (de-escalation)"),
     "/skills": (_cmd_skills, "list skills or set picker mode (auto|all|none)"),
     "/cd": (_cmd_cd, "change the sandbox cwd"),
     "/pwd": (_cmd_pwd, "print the sandbox cwd"),
@@ -1291,6 +1443,8 @@ COMMANDS: dict[str, tuple[Callable, str]] = {
     "/workflows": (_cmd_workflows_list, "list bundled workflows + their slash shortcuts"),
     "/hooks": (_cmd_hooks, "list lifecycle hooks from .essarion/config.toml"),
     "/keys": (_cmd_keys, "show which provider API keys are set in the env"),
+    "/reload": (_cmd_reload, "hot-reload .env / config without restarting"),
+    "/commands": (_cmd_help, "list every command (alias of /help)"),
     "/review": (_workflow_command("review"), "shortcut: workflows.review(<target>)"),
     "/fix": (_workflow_command("fix"), "shortcut: workflows.fix_bug(<target>)"),
     "/tests": (_workflow_command("tests"), "shortcut: workflows.write_tests(<target>)"),

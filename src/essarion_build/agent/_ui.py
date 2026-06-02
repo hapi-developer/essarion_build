@@ -328,13 +328,35 @@ def render_usage_line(
         )
 
 
+def _git_branch(cwd: str) -> str | None:
+    """Current git branch for `cwd` — best-effort, never raises. None if `cwd`
+    isn't a git repo or git is unavailable."""
+    import subprocess
+
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=cwd, capture_output=True, text=True, timeout=2, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    branch = (out.stdout or "").strip()
+    return branch or None
+
+
 def render_footer(console: Console, session: Session) -> None:
-    """A persistent-feeling status line printed at the end of each turn."""
+    """A persistent-feeling status line printed at the end of each turn.
+
+    Surfaces the active integrations Gemini puts in its footer — model, git
+    branch, sandbox cwd — alongside the cost/token/turn accounting."""
     pct = session.budget_used_pct() * 100.0
     style = "cost.under" if pct < 60 else ("cost.warn" if pct < 90 else "cost.over")
     pieces: list[tuple[str, str]] = [
         ("model ", "meta"),
         (f"{session.provider}/{session.model}", "brand"),
+        ("  ·  ", "meta"),
+        ("effort ", "meta"),
+        (f"{session.effort}", "brand"),
         ("  ·  ", "meta"),
     ]
     if session.budget_usd and session.budget_usd > 0:
@@ -371,6 +393,13 @@ def render_footer(console: Console, session: Session) -> None:
                 ("bg ", "meta"),
                 (f"{running} running", "warn"),
             ])
+    except Exception:  # noqa: BLE001 - footer never crashes
+        pass
+    # Git branch (sandbox/integration context), best-effort.
+    try:
+        branch = _git_branch(session.cwd)
+        if branch:
+            pieces.extend([("  ·  ", "meta"), ("git ", "meta"), (branch, "brand")])
     except Exception:  # noqa: BLE001 - footer never crashes
         pass
     console.print(Text.assemble(*pieces))

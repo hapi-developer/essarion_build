@@ -67,12 +67,13 @@ def tool_results_summary(text: str) -> list[tuple[str, str]]:
 
 def fold_into_context(ctx: Context, results: Iterable[tuple[str, str]]) -> int:
     """Add each tool result as a note in `ctx`. Returns count folded."""
+    from .._windowing import head_tail_window
+
     n = 0
     for name, body in results:
         if not body.strip():
             continue
-        if len(body) > 8000:
-            body = body[:8000] + "\n... (truncated)"
+        body = head_tail_window(body, max_chars=8000)
         ctx.add_note(f"[tool: {name}]\n{body}")
         n += 1
     return n

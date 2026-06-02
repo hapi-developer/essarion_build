@@ -33,6 +33,7 @@ from pydantic import BaseModel, Field
 
 from .. import Context, Usage
 from .. import tools as sdk_tools
+from .._windowing import head_tail_window
 from ._changes import current_changelog
 from ._permissions import ASK, DENY, PermissionPolicy
 from ._session import Session, TaskTurn, estimate_cost_usd
@@ -147,6 +148,20 @@ def _system_prompt(ctx: Context, memory: str = "") -> str:
         "Then make focused changes: write_file for new files, apply_diff for "
         "small edits, edit_symbol to rewrite a whole function/class by name, "
         "delete_file to remove. Verify with run_shell when you can.\n"
+        "- When the task is to ANALYZE, REVIEW, AUDIT or EXPLAIN a codebase "
+        "(not change it): after repo_map, deliberately open the security- and "
+        "concurrency-sensitive files, not just the entrypoints — tool/command "
+        "execution, subprocess/shell, shared global or module-level state and "
+        "caches, background/threaded/async code, and any raw-input or automation "
+        "paths. Read each through three lenses: shared mutable state & "
+        "concurrency, trust boundaries (shell/subprocess/untrusted input), and "
+        "resource lifecycle (leaks, missing cleanup). Read enough to ground a "
+        "claim, then move on — don't read the whole repo.\n"
+        "- Keep your output dense and grounded. Every finding or claim cites a "
+        "specific file and, when you can, a symbol or line (e.g. "
+        "`_tools.py:run_shell`). Don't restate the question or echo back context "
+        "you were given; lead with the answer. Prefer a tight, structured report "
+        "(findings as a short list) over long prose.\n"
         "- An edit result may carry automatic feedback: a `⚠` syntax error you "
         "just introduced (fix it before moving on) or a `↔` note listing the "
         "callers of a symbol you changed or removed (go check them). Act on it.\n"
@@ -381,6 +396,135 @@ def _narration(text: str, *, limit: int = 400) -> str:
     return collapsed if len(collapsed) <= limit else collapsed[: limit - 1].rstrip() + "…"
 
 
+# Exploration budget: after this many read-only tool calls in one turn, the loop
+# stops rewarding more reading and pushes the model to produce its answer/edits.
+# This is the guard against the "reads forever, answers never" failure where a
+# strong model burns the whole budget on context-gathering. A session can
+# override it via `read_cap`; 0 there means "use this default".
+_DEFAULT_READ_CAP = 25
+_READ_TOOLS = {
+    "read_file", "list_dir", "grep", "find_files", "glob",
+    "repo_map", "outline", "find_symbol", "web_fetch",
+}
+# Output tokens reserved for — and spent on — the wrap-up summary when the budget
+# runs out, so a capped run still returns its findings instead of nothing.
+_SUMMARY_OUT_TOKENS = 400
+
+
+def _content_chars(content: Any) -> int:
+    """Char count of a message's content, whether plain text or multimodal blocks."""
+    if isinstance(content, str):
+        return len(content)
+    if isinstance(content, list):
+        total = 0
+        for b in content:
+            total += len(str(b.get("text", ""))) if isinstance(b, dict) else len(str(b))
+        return total
+    return len(str(content))
+
+
+def _estimate_call_cost_usd(
+    session: Session, system: str, messages: list[dict[str, Any]], *, out_tokens: int
+) -> float:
+    """Worst-case USD cost of the NEXT provider call: the whole prompt we're about
+    to send (system + messages, ~4 chars/token) plus `out_tokens` of output (the
+    hard cap the provider can emit). Lets the loop stop BEFORE a call that would
+    cross the budget, instead of detecting the overage after it's already billed."""
+    prompt_tokens = (len(system) + sum(_content_chars(m.get("content")) for m in messages)) // 4
+    usage = Usage(
+        prompt_tokens=prompt_tokens,
+        completion_tokens=out_tokens,
+        total_tokens=prompt_tokens + out_tokens,
+    )
+    return estimate_cost_usd(session.provider, session.model, usage)
+
+
+def _synthesize_summary(actions_log: list[str], todos: list[dict]) -> str:
+    """A recap built purely from what we already did — no model call. The
+    last-resort partial output when there isn't even budget for a summary call."""
+    parts: list[str] = []
+    if actions_log:
+        parts.append("Stopped on budget. Done so far: " + "; ".join(actions_log[-8:]) + ".")
+    else:
+        parts.append("Stopped on budget before completing the goal.")
+    open_items = [t.get("text", "") for t in (todos or []) if t.get("status") != "done"]
+    open_items = [t for t in open_items if t]
+    if open_items:
+        parts.append("Still open: " + "; ".join(open_items[:6]) + ".")
+    return " ".join(parts)
+
+
+def _finalize_on_budget(
+    console,
+    session: Session,
+    provider,
+    system: str,
+    messages: list[dict[str, Any]],
+    *,
+    turn: TaskTurn | None,
+    result: "ExecResult",
+    actions_log: list[str],
+    latest_todos: list[dict],
+    remaining: float,
+) -> None:
+    """Graceful partial output when the cap is hit. Spend the reserved headroom on
+    a SHORT wrap-up so a budget-capped run still returns findings; if even that
+    won't fit, synthesize a recap from the actions already taken. A cap is only
+    useful if the user still gets value when it's reached."""
+    console.print(
+        "[cost.over]budget cap reached; wrapping up with a summary of progress "
+        "so far instead of stopping empty-handed.[/cost.over]"
+    )
+    summary_cost = _estimate_call_cost_usd(
+        session, system, messages, out_tokens=_SUMMARY_OUT_TOKENS
+    )
+    # Afford the wrap-up call when we have the headroom (summary_cost==0 means the
+    # model is unpriced/free, e.g. ollama/stub — still worth a real summary).
+    if remaining > 0 and summary_cost <= remaining:
+        stop_text = (
+            "\n\nSTOP — you are out of budget and must not take any more actions "
+            "or read any more files. In 3-6 sentences, summarize what you found "
+            "and what still needs doing, citing the specific files/symbols you "
+            "saw. Put the whole summary inside <done>…</done>."
+        )
+        # The loop always pauses here with a trailing USER turn (the goal, or the
+        # last tool-results feedback). Fold the wrap-up instruction INTO it rather
+        # than appending a second user turn — providers like Anthropic reject two
+        # consecutive same-role messages.
+        msgs = [dict(m) for m in messages]
+        if msgs and msgs[-1].get("role") == "user":
+            content = msgs[-1].get("content")
+            if isinstance(content, list):
+                msgs[-1]["content"] = content + [{"type": "text", "text": stop_text}]
+            else:
+                msgs[-1]["content"] = (content if isinstance(content, str) else str(content)) + stop_text
+        else:
+            msgs.append({"role": "user", "content": stop_text.strip()})
+        try:
+            with console.status("[brand]summarizing before stopping…[/brand]", spinner="line"):
+                resp = provider.complete(
+                    system=system, messages=msgs, max_tokens=_SUMMARY_OUT_TOKENS
+                )
+            if turn is not None:
+                u = getattr(resp, "usage", None) or Usage()
+                turn.usage = turn.usage + u
+                turn.cost_usd += estimate_cost_usd(session.provider, session.model, u)
+            text = resp.text or ""
+            done = _DONE_RE.search(text)
+            summary = done.group(1).strip() if done else _narration(text, limit=800)
+            if summary:
+                result.summary = summary
+                console.print(f"[agent]{summary}[/agent]")
+                return
+        except Exception as e:  # noqa: BLE001 - the summary is best-effort
+            console.print(f"[meta](summary call failed: {type(e).__name__}; using recap)[/meta]")
+    # No headroom (or the call failed) → recap from what we already did.
+    synth = _synthesize_summary(actions_log, latest_todos)
+    result.summary = synth
+    if synth:
+        console.print(f"[agent]{synth}[/agent]")
+
+
 def execute(
     console,
     session: Session,
@@ -424,13 +568,28 @@ def execute(
     actions_log: list[str] = []  # human-readable recap of what we did, for memory
     latest_todos: list[dict] = []  # the agent's running checklist
     nudges = 0  # consecutive no-action steps we've prodded the model through
+    reads = 0  # read-only exploration calls made this turn (exploration budget)
+    over_read_budget = False
+    read_cap = session.read_cap or _DEFAULT_READ_CAP
 
     for step in range(1, max_steps + 1):
-        # Budget guard — stop before paying for a step we can't afford.
+        # Budget guard — pre-estimate the NEXT step and stop before a call that
+        # would cross the cap, keeping enough headroom to still write a summary.
         if turn is not None and session.budget_usd:
-            if session.total_cost_usd + turn.cost_usd > session.budget_usd:
-                console.print(
-                    "[cost.over]budget cap reached; stopping autonomous run.[/cost.over]"
+            spent = session.total_cost_usd + turn.cost_usd
+            remaining = session.budget_usd - spent
+            reserve = (
+                _estimate_call_cost_usd(session, system, messages, out_tokens=_SUMMARY_OUT_TOKENS)
+                if remaining > 0 else 0.0
+            )
+            projected = _estimate_call_cost_usd(
+                session, system, messages, out_tokens=session.max_tokens
+            )
+            if remaining <= 0 or projected > max(0.0, remaining - reserve):
+                _finalize_on_budget(
+                    console, session, provider, system, messages,
+                    turn=turn, result=result, actions_log=actions_log,
+                    latest_todos=latest_todos, remaining=remaining,
                 )
                 result.stopped_reason = "budget"
                 break
@@ -557,15 +716,33 @@ def execute(
                 path = args.get("path")
                 if path and path not in touched:
                     touched.append(path)
-            fed = body if len(body) <= _RESULT_FEEDBACK_CAP else body[:_RESULT_FEEDBACK_CAP] + "\n…(truncated)"
+            # Window (head+tail), not head-only: the end of a command's output
+            # or a file body is often where the failure / the answer is.
+            fed = head_tail_window(body, max_chars=_RESULT_FEEDBACK_CAP)
             err_attr = "" if shown_ok else ' error="true"'
             result_blocks.append(f'<tool_result name="{name}"{err_attr}>{fed}</tool_result>')
 
+        # Exploration budget: count read-only calls this step; once over the cap,
+        # push the model to stop gathering context and produce its answer/edits.
+        reads += sum(1 for name, _ in calls if name in _READ_TOOLS)
+        if not over_read_budget and reads >= read_cap:
+            over_read_budget = True
+            console.print(
+                f"[warn]exploration budget reached ({reads} reads); asking the "
+                "agent to wrap up with its answer/changes.[/warn]"
+            )
+
         messages.append({"role": "assistant", "content": text})
-        feedback = (
-            "\n".join(result_blocks)
-            + "\n\nContinue. Emit <done>summary</done> when the goal is fully complete."
-        )
+        if over_read_budget:
+            tail = (
+                f"\n\nNote: you've made {reads} read/search calls — that is enough "
+                "context. STOP reading and searching now. Either make the edits the "
+                "goal needs, or — if this is an analysis/question — write your final "
+                "answer grounded in what you've seen and emit <done>…</done> with it."
+            )
+        else:
+            tail = "\n\nContinue. Emit <done>summary</done> when the goal is fully complete."
+        feedback = "\n".join(result_blocks) + tail
         messages.append({"role": "user", "content": _attach_images(feedback, session)})
 
         if done:

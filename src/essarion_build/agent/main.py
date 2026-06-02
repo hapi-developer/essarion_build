@@ -59,6 +59,20 @@ def _add_agent_args(parser: argparse.ArgumentParser) -> None:
         help="model to escalate to when selfcheck rejects",
     )
     parser.add_argument(
+        "--triage-model",
+        dest="triage_model",
+        help="cheap model for the effort=auto routing call only (de-escalation); "
+        "real reasoning stays on --model",
+    )
+    parser.add_argument(
+        "--read-cap",
+        dest="read_cap",
+        type=int,
+        default=0,
+        help="max read-only tool calls in one autonomous turn before the agent is "
+        "pushed to answer (default: 0 = use the built-in cap)",
+    )
+    parser.add_argument(
         "--skills",
         choices=["auto", "all", "none"],
         default="auto",
@@ -161,6 +175,13 @@ def _apply_project_config(
         args.max_tokens = int(defaults["max_tokens"])
     if args.escalate is None and "escalate_model" in agent_cfg:
         args.escalate = agent_cfg["escalate_model"] or None
+    if getattr(args, "triage_model", None) is None and "triage_model" in defaults:
+        args.triage_model = defaults["triage_model"] or None
+    if getattr(args, "read_cap", 0) == 0 and "read_cap" in agent_cfg:
+        try:
+            args.read_cap = int(agent_cfg["read_cap"])
+        except (TypeError, ValueError):
+            pass
     # `budget` and `skills` use argparse defaults so check against those.
     if args.budget == 0.0 and "budget" in agent_cfg:
         try:
@@ -209,6 +230,10 @@ def _initial_session(args: argparse.Namespace, project: Project) -> Session:
             s.model = args.model
         if args.escalate is not None:
             s.escalate_model = args.escalate or None
+        if getattr(args, "triage_model", None) is not None:
+            s.triage_model = args.triage_model or None
+        if getattr(args, "read_cap", 0):
+            s.read_cap = args.read_cap
         if args.skills:
             s.skills_mode = args.skills
         if args.effort:
@@ -239,6 +264,8 @@ def _initial_session(args: argparse.Namespace, project: Project) -> Session:
         provider=args.provider or cfg.provider,
         model=args.model or cfg.model,
         escalate_model=args.escalate or None,
+        triage_model=getattr(args, "triage_model", None) or cfg.triage_model,
+        read_cap=getattr(args, "read_cap", 0) or 0,
         max_tokens=args.max_tokens or cfg.max_tokens,
         budget_usd=args.budget,
         skills_mode=args.skills,

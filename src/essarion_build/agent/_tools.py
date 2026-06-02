@@ -71,15 +71,26 @@ class ToolRun(BaseModel):
 
 # ---------- read-only tools ----------
 
-def read_file(path: str, max_bytes: int = 64 * 1024) -> str:
-    """Read a UTF-8 file under the sandbox root. Truncated if huge."""
+def read_file(path: str, max_bytes: int = 64 * 1024, pattern: str = "") -> str:
+    """Read a UTF-8 file under the sandbox root.
+
+    A file larger than `max_bytes` is *windowed*, not head-truncated. With a
+    `pattern` (a regex), the kept window centers on the matching lines and the
+    function/class that encloses them — pass it to home in on a symbol in a big
+    file cheaply. Without one, BOTH the head and the tail are preserved, because
+    the end of a file (a `__main__` guard, a class's later methods) is often
+    where the load-bearing logic lives and a blind prefix would miss it.
+    """
     p = _resolve(path)
     if not p.is_file():
         raise FileNotFoundError(f"not a file: {path}")
     data = p.read_text(encoding="utf-8", errors="replace")
-    if len(data) > max_bytes:
-        return data[:max_bytes] + f"\n... (truncated; full size {len(data):,} bytes)"
-    return data
+    if len(data) <= max_bytes:
+        return data
+    from .._windowing import smart_truncate
+
+    windowed = smart_truncate(data, max_chars=max_bytes, pattern=pattern or None)
+    return windowed + f"\n(file {path} is {len(data):,} bytes; shown windowed to ~{max_bytes:,})"
 
 
 def list_dir(path: str = ".", max_entries: int = 200) -> str:

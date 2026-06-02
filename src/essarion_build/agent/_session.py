@@ -95,6 +95,15 @@ class Session(BaseModel):
     # show tokens + cost. Set one with `/budget <amount>` to halt the turn when
     # projected spend would cross it.
     budget_usd: float = 0.0
+    # Exploration budget: max read-only tool calls (read_file/grep/…) in a single
+    # autonomous turn before the agent is pushed to stop gathering context and
+    # produce its answer/changes. 0 means "use the executor default". Guards
+    # against the "reads forever, answers never" budget-exhaustion failure.
+    read_cap: int = 0
+    # Cheap model used only for the throwaway triage/classification call when
+    # effort='auto'. None → triage runs on the main model. Lets a run keep a
+    # capable default for real reasoning while spending pennies on routing.
+    triage_model: str | None = None
     skills_mode: str = "auto"  # "auto" | "all" | "none"
     # Reasoning depth. The agent defaults to "auto" — a tiny triage call
     # sizes each task and routes to quick/standard/deep. Cheap on easy
