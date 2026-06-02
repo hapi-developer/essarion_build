@@ -406,6 +406,36 @@ def render_footer(console: Console, session: Session) -> None:
     console.print(Rule(style="brand.dim"))
 
 
+def render_second_opinion(console: Console, op) -> None:
+    """Render a cross-model second opinion — quiet agreement, or the concrete
+    concerns a different model raised about the change."""
+    model = op.model or "reviewer"
+    if not op.ok:
+        console.print(f"[meta]🔎 second opinion ({model}) unavailable: {op.error}[/meta]")
+        return
+    if op.agree and not op.concerns:
+        line = f"[ok]🔎 second opinion[/ok] [meta]({model}): agrees — safe to ship[/meta]"
+        if op.summary:
+            line += f" [meta]· {op.summary}[/meta]"
+        console.print(line)
+        return
+    from rich.panel import Panel
+
+    verdict = "disagrees" if not op.agree else "flags concerns"
+    style = "err" if not op.agree else "warn"
+    body = [f"[{style}]•[/{style}] {c}" for c in op.concerns[:8]]
+    if len(op.concerns) > 8:
+        body.append(f"[meta]…(+{len(op.concerns) - 8} more)[/meta]")
+    if op.summary:
+        body.append("")
+        body.append(f"[meta]{op.summary}[/meta]")
+    console.print(Panel(
+        "\n".join(body) or "[meta](no specifics given)[/meta]",
+        title=f"[{style}]🔎 second opinion ({model}) — {verdict}[/{style}]",
+        border_style=style, padding=(0, 1),
+    ))
+
+
 def drain_background_notices(console: Console) -> None:
     """Print one inline notice per completed background task. Called at the
     top of each REPL prompt so the user sees finishes between turns."""

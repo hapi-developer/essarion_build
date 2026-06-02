@@ -10,10 +10,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Cost-and-quality release: stop the agent from burning a budget on reading
 before it answers, make the spending cap actually hold (and still return value
 when it's hit), and sharpen analysis with structural/security reasoning and
-file-grounded output. All zero-dependency (standard library only).
+file-grounded output. Headlined by **cross-model second opinion** — an
+independent, different model that red-teams every change for pennies — and
+**`.env` that just works**. All zero-dependency (standard library only).
 
 ### Added
 
+- **Cross-model second opinion (`/crosscheck`, `--crosscheck-model`) — a feature
+  no mainstream coding agent ships.** A *different* model independently red-teams
+  every change before it lands, seeing only the goal and the diff (never the
+  repo, so it's cheap — a review is a few hundred tokens). Different model
+  families have different blind spots, so where the writer and the reviewer
+  **disagree is exactly where bugs hide** — Essarion surfaces the specific
+  concerns (file·symbol·why) and, in autonomous mode, nudges you to `/fix` or
+  `/undo`. This is the cheap-ensemble reading of the whole thesis: two *pennies*
+  models, one building and a different one cross-examining, catch what one model
+  rubber-stamps. Pairs naturally with cheap-triage routing and the budget cap.
+  Best with a different family on the same provider (e.g. write on `openai/...`,
+  review on `anthropic/...` — one OpenRouter key).
+- **`.env` just works.** A `.env` at the project root or cwd is now **auto-loaded
+  at startup** (non-overriding, so a shell-exported var still wins) — no
+  `export`, no restart. `/keys set <provider> [key]` captures a key for the
+  session (hidden prompt if you omit it) and can persist it to `.env` (with a
+  warning if `.env` isn't git-ignored). `/reload` re-reads it live. Key *names*
+  are reported, values never printed.
 - **Semantic windowing for large files (`_windowing.py`).** Truncation no longer
   drops the *tail* of a file — the end (a `__main__` guard, a class's later
   methods) is often where the load-bearing logic lives. `read_file` now accepts

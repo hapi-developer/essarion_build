@@ -38,39 +38,6 @@ _PROVIDER_ENVS: dict[str, tuple[str, ...]] = {
 }
 
 
-def _load_dotenv(path) -> list[str]:
-    """Parse a ``.env`` file and set the variables into ``os.environ``.
-
-    Minimal, dependency-free: ``KEY=VALUE`` per line, ``#`` comments, an optional
-    ``export`` prefix, and surrounding single/double quotes stripped. Returns the
-    key NAMES loaded (never the values) so the caller can report without leaking
-    secrets.
-    """
-    import os
-    from pathlib import Path
-
-    keys: list[str] = []
-    try:
-        text = Path(path).read_text(encoding="utf-8")
-    except OSError:
-        return keys
-    for raw in text.splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        if line.startswith("export "):
-            line = line[len("export "):].lstrip()
-        key, sep, val = line.partition("=")
-        if not sep:
-            continue
-        key = key.strip()
-        val = val.strip().strip('"').strip("'")
-        if key:
-            os.environ[key] = val
-            keys.append(key)
-    return keys
-
-
 def _warn_if_key_missing(console: Console, provider: str) -> None:
     """Warn (don't block) when the just-selected provider's key isn't in the env.
 
@@ -96,7 +63,7 @@ _HELP_GROUPS: list[tuple[str, list[str]]] = [
     ("planning", ["/ask"]),
     ("workflows", ["/workflows", "/review", "/fix", "/tests", "/refactor", "/docs", "/security", "/perf", "/explain", "/pr"]),
     ("reasoning", ["/effort"]),
-    ("models & cost", ["/model", "/escalate", "/triage", "/budget", "/cost", "/stream", "/keys", "/reload"]),
+    ("models & cost", ["/model", "/escalate", "/triage", "/crosscheck", "/budget", "/cost", "/stream", "/keys", "/reload"]),
     ("skills & memory", ["/skills", "/remember", "/forget"]),
     ("project & files", ["/cd", "/pwd"]),
     ("code intelligence", ["/map", "/outline", "/symbol"]),
@@ -223,6 +190,8 @@ def _cmd_model(console: Console, session: Session, args: str) -> CommandResult:
                if session.escalate_model else "")
             + (f"  [meta](triage on {session.triage_model})[/meta]"
                if session.triage_model else "")
+            + (f"  [meta](2nd opinion: {session.crosscheck_model})[/meta]"
+               if session.crosscheck_model else "")
         )
         console.print(
             f"[hint]usage: /model <provider>/<model>  e.g. /model openai/gpt-4o-mini[/hint]"
@@ -296,6 +265,48 @@ def _cmd_escalate(console: Console, session: Session, args: str) -> CommandResul
         return "continue"
     session.escalate_model = args
     console.print(f"[ok]will escalate to {args} on selfcheck reject[/ok]")
+    return "continue"
+
+
+def _cmd_crosscheck(console: Console, session: Session, args: str) -> CommandResult:
+    """Show or set the cross-model SECOND OPINION reviewer.
+
+    A DIFFERENT model (ideally a different family, running on your current
+    provider) independently red-teams every change — handed only the goal and
+    the diff, so it's cheap. Where the two models disagree is where bugs hide.
+    This is the cheap-ensemble idea: two pennies models catch what one misses.
+
+    Usage:
+      /crosscheck                 show the current reviewer
+      /crosscheck <model>         review every change with <model>
+      /crosscheck off             disable
+    """
+    args = args.strip()
+    if not args:
+        if session.crosscheck_model:
+            console.print(
+                f"[meta]second-opinion model:[/meta] [brand]{session.crosscheck_model}[/brand] "
+                "[meta](independently reviews every change)[/meta]"
+            )
+        else:
+            console.print("[meta]no second-opinion model set — changes aren't cross-checked[/meta]")
+        console.print(
+            "[hint]usage: /crosscheck <model>  ·  /crosscheck off  ·  "
+            "best with a different model FAMILY[/hint]"
+        )
+        return "continue"
+    if args.lower() in {"off", "none", "clear"}:
+        session.crosscheck_model = None
+        console.print("[ok]second opinion off[/ok]")
+        return "continue"
+    session.crosscheck_model = args
+    console.print(f"[ok]second opinion on[/ok] [meta]— every change reviewed by {args}[/meta]")
+    if args == session.model:
+        console.print(
+            "[warn]tip:[/warn] that's the same model that writes the change — a "
+            "different family catches more (different blind spots)."
+        )
+    _warn_if_key_missing(console, session.provider)
     return "continue"
 
 
@@ -955,12 +966,113 @@ def _cmd_cost(console: Console, session: Session, args: str) -> CommandResult:
     return "continue"
 
 
-def _cmd_keys(console: Console, session: Session, args: str) -> CommandResult:
-    """Show which provider API keys are set in the environment.
+def _env_is_gitignored(cwd) -> bool:
+    """Whether `.env` is covered by `.gitignore` (so a saved key won't be committed)."""
+    from pathlib import Path
 
-    Doesn't print the key values — only whether they exist. Useful for
-    "why isn't this working?" debugging.
+    gi = Path(cwd) / ".gitignore"
+    if not gi.is_file():
+        return False
+    try:
+        for line in gi.read_text(encoding="utf-8").splitlines():
+            if line.strip() in {".env", "*.env", ".env*", "/.env", ".env.*"}:
+                return True
+    except OSError:
+        pass
+    return False
+
+
+def _keys_set(console: Console, session: Session, rest: str) -> CommandResult:
+    """`/keys set <provider> [key] [save]` — capture a provider key for this
+    session (and optionally persist it to `.env`). Omit the key to be prompted
+    without echo. Append `save` to write it to `.env` non-interactively."""
+    import os
+
+    tokens = rest.split()
+    provider = (tokens[0] if tokens else session.provider).strip().lower()
+    envs = _PROVIDER_ENVS.get(provider)
+    if envs is None:
+        console.print(f"[err]unknown provider {provider!r}. known: {', '.join(_PROVIDER_ENVS)}[/err]")
+        return "continue"
+    if not envs:
+        console.print(f"[meta]{provider} needs no API key.[/meta]")
+        return "continue"
+    env_var = envs[0]
+    rest_tokens = tokens[1:]
+    save = bool(rest_tokens) and rest_tokens[-1].lower() == "save"
+    if save:
+        rest_tokens = rest_tokens[:-1]
+    key = rest_tokens[0] if rest_tokens else ""
+
+    if not key:
+        # Prompt without echo when interactive; otherwise we can't capture it.
+        import getpass
+        import sys
+
+        if getattr(sys.stdin, "isatty", lambda: False)():
+            try:
+                key = getpass.getpass(f"{env_var} (input hidden): ").strip()
+            except (EOFError, KeyboardInterrupt):
+                console.print("[meta]cancelled.[/meta]")
+                return "continue"
+        else:
+            console.print(f"[err]usage: /keys set {provider} <key> [save][/err]")
+            return "continue"
+    if not key:
+        console.print("[meta]no key entered.[/meta]")
+        return "continue"
+
+    os.environ[env_var] = key
+    console.print(f"[ok]{env_var} set for this session[/ok]")
+
+    # Persist to .env (so it survives a restart) when asked, or offered interactively.
+    if not save:
+        import sys
+
+        if getattr(sys.stdin, "isatty", lambda: False)() and getattr(sys.stdout, "isatty", lambda: False)():
+            ans = _ui.prompt_text(
+                console, "[brand]save to .env so it persists across restarts? (y/N)[/brand]",
+                default="N",
+            ).strip().lower()
+            save = ans in {"y", "yes"}
+    if save:
+        from pathlib import Path
+
+        from ._dotenv import upsert_dotenv
+
+        env_path = Path(session.cwd) / ".env"
+        try:
+            upsert_dotenv(env_path, env_var, key)
+        except OSError as e:
+            console.print(f"[err]could not write {env_path}: {e}[/err]")
+            return "continue"
+        console.print(f"[ok]saved {env_var} → {env_path}[/ok]")
+        if not _env_is_gitignored(session.cwd):
+            console.print(
+                "[warn]heads up:[/warn] .env isn't in .gitignore — add it so the key "
+                "isn't committed."
+            )
+    else:
+        console.print(
+            "[hint]set for this session only. add `save` (or say yes) to persist it "
+            "to .env.[/hint]"
+        )
+    return "continue"
+
+
+def _cmd_keys(console: Console, session: Session, args: str) -> CommandResult:
+    """Show which provider API keys are set, or set one.
+
+    `/keys`                       table of which provider keys are present
+    `/keys set <provider> [key]`  capture a key (hidden prompt if omitted),
+                                  optionally persisting it to `.env`
+
+    Never prints key values — only whether they exist.
     """
+    arg = args.strip()
+    if arg.lower() == "set" or arg.lower().startswith("set "):
+        return _keys_set(console, session, arg[3:].strip())
+
     import os
     from rich.table import Table
 
@@ -996,25 +1108,18 @@ def _cmd_reload(console: Console, session: Session, args: str) -> CommandResult:
     relaunching the agent.
     """
     import os
-    from pathlib import Path
 
+    from ._dotenv import default_env_paths, load_dotenv_files
     from ._project import find_project_root
 
-    loaded: list[str] = []
-    seen: set[str] = set()
     project = find_project_root(session.cwd)
-    candidates = [Path(session.cwd) / ".env"]
-    if project.root and Path(project.root) != Path(session.cwd):
-        candidates.append(Path(project.root) / ".env")
-    found_any = False
-    for env_path in candidates:
-        if env_path.is_file():
-            found_any = True
-            for k in _load_dotenv(env_path):
-                if k not in seen:
-                    seen.add(k)
-                    loaded.append(k)
-            console.print(f"[ok]reloaded[/ok] [brand]{env_path}[/brand]")
+    paths = default_env_paths(session.cwd, project.root)
+    found = [p for p in paths if p.is_file()]
+    for p in found:
+        console.print(f"[ok]reloaded[/ok] [brand]{p}[/brand]")
+    # Explicit reload overrides — picking up a key you just changed is the point.
+    loaded = load_dotenv_files(found, override=True)
+    found_any = bool(found)
 
     # Re-read config-file defaults (provider/model/triage/max_tokens). These feed
     # the SDK defaults; the active session keeps the model you chose.
@@ -1179,7 +1284,8 @@ def _cmd_whoami(console: Console, session: Session, args: str) -> CommandResult:
         "model",
         f"{session.provider}/[brand]{session.model}[/brand]"
         + (f"  [meta]escalate→[/meta] {session.escalate_model}" if session.escalate_model else "")
-        + (f"  [meta]triage→[/meta] {session.triage_model}" if session.triage_model else ""),
+        + (f"  [meta]triage→[/meta] {session.triage_model}" if session.triage_model else "")
+        + (f"  [meta]2nd→[/meta] {session.crosscheck_model}" if session.crosscheck_model else ""),
     )
     table.add_row(
         "skills",
@@ -1411,6 +1517,7 @@ COMMANDS: dict[str, tuple[Callable, str]] = {
     "/model": (_cmd_model, "show or set the provider/model"),
     "/escalate": (_cmd_escalate, "set or clear the escalation model"),
     "/triage": (_cmd_triage, "set the cheap model for effort=auto routing (de-escalation)"),
+    "/crosscheck": (_cmd_crosscheck, "set a 2nd model to independently review every change"),
     "/skills": (_cmd_skills, "list skills or set picker mode (auto|all|none)"),
     "/cd": (_cmd_cd, "change the sandbox cwd"),
     "/pwd": (_cmd_pwd, "print the sandbox cwd"),
@@ -1442,7 +1549,7 @@ COMMANDS: dict[str, tuple[Callable, str]] = {
     "/summary": (_cmd_summary, "one-paragraph summary of this session — useful for commits/PRs"),
     "/workflows": (_cmd_workflows_list, "list bundled workflows + their slash shortcuts"),
     "/hooks": (_cmd_hooks, "list lifecycle hooks from .essarion/config.toml"),
-    "/keys": (_cmd_keys, "show which provider API keys are set in the env"),
+    "/keys": (_cmd_keys, "show provider keys, or set one: /keys set <provider> [key]"),
     "/reload": (_cmd_reload, "hot-reload .env / config without restarting"),
     "/commands": (_cmd_help, "list every command (alias of /help)"),
     "/review": (_workflow_command("review"), "shortcut: workflows.review(<target>)"),

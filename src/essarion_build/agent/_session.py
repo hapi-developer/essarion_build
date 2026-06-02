@@ -89,6 +89,11 @@ class Session(BaseModel):
     provider: str
     model: str
     escalate_model: str | None = None  # set on /escalate or auto-pick
+    # Cross-model "second opinion": an INDEPENDENT model (ideally a different
+    # family, runs on `provider`) that red-teams each change before it lands —
+    # seeing only the goal + the diff, so it's cheap. Where two models disagree
+    # is where bugs hide. None → off. Set with /crosscheck.
+    crosscheck_model: str | None = None
     stream: bool = False  # True → stream draft tokens to the console
     max_tokens: int = 4096
     # Spending cap in USD. 0.0 (the default) means NO cap — we just meter and

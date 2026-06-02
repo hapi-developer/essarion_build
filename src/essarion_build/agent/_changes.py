@@ -46,6 +46,35 @@ class FileChange(BaseModel):
         ))
 
 
+def diff_entries(entries: list["FileChange"]) -> str:
+    """Collapsed unified diff over an arbitrary slice of change entries (net
+    before→after per path). Lets callers diff just one turn's changes."""
+    if not entries:
+        return ""
+    first_before: dict[str, str | None] = {}
+    last_after: dict[str, str | None] = {}
+    for e in entries:
+        if e.path not in first_before:
+            first_before[e.path] = e.before
+        last_after[e.path] = e.after
+    out: list[str] = []
+    for path in first_before:
+        before = first_before[path]
+        after = last_after[path]
+        if before is None and after is None:
+            continue  # created then deleted — no net change
+        a_label = f"a/{path}" if before is not None else "/dev/null"
+        b_label = f"b/{path}" if after is not None else "/dev/null"
+        joined = "".join(difflib.unified_diff(
+            (before or "").splitlines(keepends=True),
+            (after or "").splitlines(keepends=True),
+            fromfile=a_label, tofile=b_label, n=3,
+        ))
+        if joined.strip():
+            out.append(joined)
+    return "".join(out)
+
+
 class ChangeLog(BaseModel):
     """Ordered history of file changes during a session."""
 
@@ -117,6 +146,11 @@ class ChangeLog(BaseModel):
             if joined.strip():
                 out.append(joined)
         return "".join(out)
+
+    def diff_since(self, start: int) -> str:
+        """Collapsed unified diff over the entries recorded since index `start`
+        — i.e. just one turn's net changes, for a focused review."""
+        return diff_entries(self.entries[start:])
 
     def undo_last(self, *, sandbox_root: Path) -> FileChange | None:
         """Revert the most recent change. Returns the entry that was undone,

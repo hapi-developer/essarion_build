@@ -602,6 +602,38 @@ def _run_draft_phase(
     return g
 
 
+def _run_crosscheck(console, session: Session, goal: str, change_text: str, turn: TaskTurn):
+    """Cheap cross-model second opinion on a change. Returns a SecondOpinion or
+    None (off / nothing to review / unaffordable). Charges the turn's meter.
+
+    An INDEPENDENT model (ideally a different family, on the same provider) is
+    handed only the goal + the diff and asked to find what's wrong. Where it
+    disagrees with the model that wrote the change is where bugs hide.
+    """
+    model = getattr(session, "crosscheck_model", None)
+    if not model or not (change_text or "").strip():
+        return None
+    if session.budget_usd:
+        remaining = session.budget_usd - session.total_cost_usd - turn.cost_usd
+        if remaining <= 0:
+            console.print("[meta]🔎 second opinion skipped (budget reached).[/meta]")
+            return None
+    try:
+        provider = build_provider(name=session.provider, api_key=None, model=model)
+    except Exception as e:  # noqa: BLE001 - a failed review must never break a turn
+        console.print(f"[warn]🔎 second opinion skipped — {type(e).__name__}: {e}[/warn]")
+        return None
+    from ._crosscheck import request_second_opinion
+
+    with console.status(f"[brand]🔎 second opinion from {model}…[/brand]", spinner="line"):
+        op = request_second_opinion(provider, goal=goal, change=change_text, model=model)
+    op.cost_usd = estimate_cost_usd(session.provider, model, op.usage)
+    turn.usage = turn.usage + op.usage
+    turn.cost_usd += op.cost_usd
+    _ui.render_second_opinion(console, op)
+    return op
+
+
 def _apply_or_save(console, session: Session, turn: TaskTurn, code: str) -> None:
     """Offer to apply the code change. Tries to detect diffs vs raw code."""
     if not code.strip():
@@ -613,6 +645,9 @@ def _apply_or_save(console, session: Session, turn: TaskTurn, code: str) -> None
     else:
         _ui.render_code(console, code)
         kind = "code"
+
+    # Cheap cross-model second opinion on the proposed change before you decide.
+    _run_crosscheck(console, session, turn.task, code, turn)
 
     choice = _ui.prompt_approve_apply(console, kind=kind)
     if choice == "discard":
@@ -1115,6 +1150,13 @@ def run_turn_autonomous(console, session: Session, task: str):
     if new_entries:
         created, edited, deleted = _classify_changes(new_entries)
         _ui.render_change_summary(console, created, edited, deleted)
+        # Cross-model second opinion on this turn's net diff (cheap-ensemble gate).
+        op = _run_crosscheck(console, session, task, log.diff_since(start), turn)
+        if op is not None and op.disagrees:
+            console.print(
+                "[hint]a second model flagged concerns above — "
+                "[key]/fix <note>[/key] to address them, or [key]/undo[/key].[/hint]"
+            )
 
     # 5. Auto-verify + suggestions + footer.
     _maybe_auto_verify(console, session, turn)
