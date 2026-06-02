@@ -133,15 +133,23 @@ classic **plan → approve → hand-apply** flow:
 7. **Background tasks.** `/bg npm run dev` runs in parallel. The agent
    keeps working; completion notices fire between turns. /quit cleanly
    kills non-detached tasks via SIGTERM → SIGKILL on the process group.
-8. **Streamed draft output.** `/stream on` shows code as it's written,
+8. **Drive a real browser (computer use).** Opt in with `/computer` (or
+   `--computer-use`) and the agent drives a real headless browser to *test
+   what it just built* — start a dev server in the background, then navigate,
+   click, and type, reading back a reactive digest of console errors, network
+   failures, and DOM changes (not just a screenshot). Each action can carry an
+   `expect=` prediction the environment verifies deterministically. `/desktop`
+   extends the same loop to the real mouse/keyboard/screen (explicit opt-in).
+   On vision-capable models the agent can *see* the screenshots it takes.
+9. **Streamed draft output.** `/stream on` shows code as it's written,
    token by token.
-9. **Auto-verify + undo.** Configure `[verify].auto=true` and the agent
-   runs your test suite after every applied change. If it fails, `/undo`
-   reverts the last change.
-10. **Reasoning-trace persistence.** Every session saved to
+10. **Auto-verify + undo.** Configure `[verify].auto=true` and the agent
+    runs your test suite after every applied change. If it fails, `/undo`
+    reverts the last change.
+11. **Reasoning-trace persistence.** Every session saved to
     `<project>/.essarion/sessions/` (or `~/.essarion/sessions/`). Replay
     with `essarion --resume <id>`.
-11. **The whole SDK is yours.** Anything you can do in the agent, you can
+12. **The whole SDK is yours.** Anything you can do in the agent, you can
     do in code — same `reason()`, `generate()`, `Conversation` calls.
 
 ### Quick commands
@@ -301,7 +309,10 @@ Type `/help` inside the agent for the categorized view. The headline ones:
 
 | Command | Description |
 |---|---|
+| `/auto [on\|off]` | toggle autonomous mode (off = plan → approve → apply checkpoint) |
 | `/yolo` | toggle auto-approval of side-effect tools |
+| `/computer [on\|off]` | let the agent drive a real browser to test what it builds (opt-in) |
+| `/desktop [on\|off]` | let the agent control the real mouse/keyboard/screen (explicit opt-in) |
 
 ## Install
 
@@ -397,18 +408,21 @@ A core idea: cheap models cost less but reason worse. `essarion_build` closes th
 from essarion_build import Context, list_skills, load_skill
 
 list_skills()
-# [
-#   'accessibility', 'api_design', 'auth_security', 'caching', 'cli_design',
-#   'cloud_infra', 'code_review', 'code_smells', 'code_style', 'concurrency',
+# [  # 54 bundled, alphabetical
+#   'accessibility', 'agile_practice', 'api_design', 'auth_security',
+#   'build_systems', 'caching', 'cli_design', 'cloud_infra',
+#   'code_organization', 'code_review', 'code_review_practice', 'code_search',
+#   'code_smells', 'code_style', 'code_with_llms', 'concurrency', 'containers',
 #   'data_modeling', 'database_design', 'debugging', 'dependency_injection',
-#   'dependency_management', 'documentation', 'dx', 'error_handling',
-#   'event_driven', 'feature_flags', 'git_workflow', 'go_idioms',
-#   'incident_response', 'internationalization', 'kubernetes',
+#   'dependency_management', 'distributed_systems', 'documentation', 'dx',
+#   'error_handling', 'event_driven', 'feature_flags', 'git_workflow',
+#   'go_idioms', 'incident_response', 'internationalization', 'kubernetes',
 #   'llm_integration', 'logging', 'microservices', 'migrations',
-#   'observability', 'performance', 'python_idioms', 'react_patterns',
-#   'refactoring', 'release_engineering', 'rust_idioms', 'scope_discipline',
-#   'secure_coding', 'sql_idioms', 'state_management', 'testing',
-#   'typescript_idioms'
+#   'ml_engineering', 'networking', 'observability', 'observability_practice',
+#   'performance', 'python_idioms', 'react_patterns', 'refactoring',
+#   'release_engineering', 'rust_idioms', 'scope_discipline', 'secure_coding',
+#   'sql_idioms', 'state_management', 'testing', 'typescript_idioms',
+#   'web_security'
 # ]
 
 # Pick the ones relevant to your task...
@@ -756,6 +770,29 @@ ctx = keep_only_files(ctx, patterns=["src/auth/*", "src/billing/*"])
 `compact()` never drops skills, notes, or diffs — they are the
 high-signal content.
 
+## Telemetry
+
+Off by default, zero-dependency. Wire a callback to receive structured events
+as the reasoning loop runs — pipe them into your logs/traces, do per-team
+usage accounting, or debug without sprinkling `print`s through the SDK:
+
+```python
+from essarion_build import configure_telemetry, reason, Context
+
+def on_event(ev: dict) -> None:
+    print(f"[{ev['kind']}] {ev}")   # loop_start, phase_complete, loop_complete, …
+
+configure_telemetry(on_event=on_event)
+reason("harden the JWT check", context=Context().with_all_skills())
+
+# Toggle without losing the callback, or clear it entirely:
+configure_telemetry(enabled=False)
+configure_telemetry(on_event=None)
+```
+
+Events are plain dicts (`{"kind": ..., "ts": ..., ...}`); a callback that
+raises can never break the loop. See `examples/06_telemetry.py`.
+
 ## Evals
 
 A model-driven SDK without evals is a benchmark waiting to regress.
@@ -810,6 +847,81 @@ The `allow` set is a security boundary — unknown or disallowed tools
 become inline `<tool_result error="true">…</tool_result>` instead of
 running. Use this for the small-tool case (look up the schema, fetch a
 URL); for full agent loops, build directly on `Provider.complete()`.
+
+## Vision — let the model see
+
+A message's content can be a plain string (as always) or a list of neutral
+blocks, so you can send a screenshot or a diagram alongside text. Each provider
+(OpenAI/OpenRouter, Anthropic, Gemini) renders the blocks into its own native
+multimodal shape; text-only providers (Ollama) fall back to the text parts, and
+a plain string flows through untouched:
+
+```python
+from essarion_build import build_provider, image_block, text_block
+
+provider = build_provider(name="anthropic", api_key=None, model="claude-sonnet-4-6")
+resp = provider.complete(
+    system="You are a meticulous UI reviewer.",
+    messages=[{
+        "role": "user",
+        "content": [
+            text_block("What's broken in this screenshot?"),
+            image_block(open("screenshot.png", "rb").read()),   # bytes or base64
+        ],
+    }],
+    max_tokens=500,
+)
+print(resp.text)
+```
+
+This is the same seam the computer-use tools use to show the model a screenshot
+of the page or screen — on vision-capable models only (otherwise the capture is
+noted, never sent blind).
+
+## Computer use (browser + desktop)
+
+The `essarion` agent can drive a **real browser** to test what it builds, and —
+explicitly opt-in — the **real desktop** (mouse/keyboard/screen). It's built on
+one principle: the environment observes and emits structured events, and the
+model acts on a compact *digest* only when something meaningful changes — never
+a continuous watcher.
+
+In the CLI agent it's off by default; turn it on with `/computer` (browser) or
+`/desktop` (machine), or launch with `--computer-use`:
+
+```bash
+essarion --computer-use "open the dev server and check the login flow works"
+```
+
+- **Reactive, text-first.** Every action returns a budget-sized digest of
+  console errors, network failures, navigations, dialogs, and DOM mutations —
+  catching the transient changes a screenshot-only agent misses.
+- **Expectation-checked acting** ("reason deep, act fast"). Each action takes an
+  optional `expect=` one-line prediction; the environment verifies it against
+  the digest + page text deterministically (no extra model call) and prepends
+  a ✓/✗.
+- **Vision when the model has it.** `browser_screenshot` / `desktop_screenshot`
+  attach the image to the next message on vision-capable models, and note the
+  capture (never send blind) otherwise.
+- **Desktop is explicit-opt-in only.** `/desktop` requires a typed
+  acknowledgement and treats on-screen text as untrusted (prompt-injection);
+  run it on a contained display/VM.
+
+The whole toolkit is importable — build your own reactive browser automation on
+top of the SDK, the same way the reasoning loop is importable:
+
+```python
+from essarion_build.computer import FakeBackend, bind_backend, browser_click
+
+bind_backend(FakeBackend(url="https://app.test"))
+result = browser_click(selector="#login", expect="navigates to /dashboard")
+print(result)        # the action's digest, prefixed with a ✓/✗ on the expectation
+```
+
+The reducer, observer, and expectation engine are pure-Python and
+dependency-free; only the live backends need extras — `pip install
+'essarion-build[computer]'` (Playwright, browser tier) or
+`'essarion-build[desktop]'` (python-xlib/mss/Pillow, desktop tier).
 
 ## CLI
 
@@ -932,7 +1044,7 @@ from essarion_build.auth import from_platform_api   # raises NotImplementedError
 
 ## Out of scope for v0.3
 
-No plugin loader (custom providers + custom skills cover the same surface), no embeddings/RAG (use the `Context.add_repo(include=...)` filter), no telemetry, no model-side tool use.
+No plugin loader (custom providers + custom skills cover the same surface) and no embeddings/RAG (use the `Context.add_repo(include=...)` filter). The `CloudRuntime` is still a stub (raises `CloudRuntimeNotAvailable`), and the Sourcipedia / Agent-skill interop hooks are placeholder seams (see above).
 
 ## License
 
