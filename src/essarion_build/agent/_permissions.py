@@ -124,6 +124,13 @@ class PermissionPolicy:
             for p in self.allow_patterns:
                 if re.search(p, cmd):
                     return ALLOW, ""
+            # An explicit per-tool deny (e.g. `[permissions] shell = "deny"`) must
+            # block everything that wasn't just allow-listed above — INCLUDING
+            # risky commands. Consult it before the risky/ask screen so a locked-
+            # down shell can't be downgraded to ask (or to allow under /yolo) by
+            # the risk heuristics.
+            if self._base(name) == DENY:
+                return DENY, f"{name} is set to 'deny' by your permission policy"
             for p in self.ask_patterns + _RISKY:
                 if re.search(p, cmd):
                     if yolo:

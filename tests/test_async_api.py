@@ -281,3 +281,70 @@ async def test_async_top_level_areason_uses_default_runtime(monkeypatch) -> None
     )
     r = await areason("task", context=Context())
     assert r.verdict == "ship"
+
+
+# --- multimodal parity: async providers must render image content natively ---
+import json as _json  # noqa: E402
+
+from essarion_build._content import image_block, text_block  # noqa: E402
+
+
+def _img_messages():
+    return [{"role": "user", "content": [text_block("what is this?"),
+                                         image_block(b"\x89PNG-bytes", "image/png")]}]
+
+
+async def test_async_openai_renders_image_as_image_url(monkeypatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "key")
+    transport = _install_async_transport(monkeypatch, [_ok_response()])
+    prov = build_async_provider(name="openai", api_key=None, model="gpt-4o")
+    await prov.complete(system="s", messages=_img_messages(), max_tokens=10)
+    body = _json.loads(transport.requests[0].content)
+    content = body["messages"][-1]["content"]
+    types = [b.get("type") for b in content]
+    assert "image_url" in types  # not the neutral {"type":"image",...} block
+    assert "text" in types
+
+
+async def test_async_gemini_renders_image_as_inline_data(monkeypatch) -> None:
+    monkeypatch.setenv("GEMINI_API_KEY", "key")
+    ok = httpx.Response(200, json={
+        "candidates": [{"content": {"parts": [{"text": "<plan>1</plan>"}]}}],
+        "usageMetadata": {},
+    })
+    transport = _install_async_transport(monkeypatch, [ok])
+    prov = build_async_provider(name="gemini", api_key=None, model="gemini-1.5")
+    await prov.complete(system="s", messages=_img_messages(), max_tokens=10)
+    body = _json.loads(transport.requests[0].content)
+    parts = body["contents"][-1]["parts"]
+    # The image must be an inline_data part, NOT wrapped inside a text part
+    # (the pre-fix bug emitted {"text": [<block list>]}).
+    assert any("inline_data" in p for p in parts)
+    assert all(isinstance(p.get("text", ""), str) for p in parts)
+
+
+async def test_async_anthropic_renders_image_and_marks_cache(monkeypatch) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "key")
+    prov = build_async_provider(name="anthropic", api_key=None, model="claude-sonnet-4-6")
+
+    captured = {}
+
+    class _Usage:
+        input_tokens = output_tokens = 0
+        cache_read_input_tokens = cache_creation_input_tokens = 0
+
+    class _Resp:
+        content = []
+        usage = _Usage()
+
+    async def _fake_create(**kwargs):
+        captured.update(kwargs)
+        return _Resp()
+
+    monkeypatch.setattr(prov._client.messages, "create", _fake_create)
+    await prov.complete(system="s", messages=_img_messages(), max_tokens=10)
+    last = captured["messages"][-1]["content"]
+    # Neutral image block -> Anthropic's {"type":"image","source":{...}} shape.
+    assert any(b.get("type") == "image" and "source" in b for b in last)
+    # Growing-prefix cache breakpoint applied (parity with the sync provider).
+    assert any("cache_control" in b for b in last)

@@ -234,7 +234,10 @@ class _AnthropicProvider:
             AuthenticationError,
             RateLimitError,
         )
+        from ._content import render_anthropic
 
+        rendered = [{**m, "content": render_anthropic(m["content"])} for m in messages]
+        _mark_last_cacheable(rendered)
         try:
             with self._client.messages.stream(
                 model=self.model,
@@ -246,7 +249,7 @@ class _AnthropicProvider:
                         "cache_control": {"type": "ephemeral"},
                     }
                 ],
-                messages=messages,
+                messages=rendered,
             ) as stream:
                 for text in stream.text_stream:
                     yield StreamChunk(text=text)

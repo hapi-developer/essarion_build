@@ -572,6 +572,7 @@ def execute(
     over_read_budget = False
     read_cap = session.read_cap or _DEFAULT_READ_CAP
 
+    step = 0  # bound even if max_steps <= 0 so `result.steps = step` is safe
     for step in range(1, max_steps + 1):
         # Budget guard — pre-estimate the NEXT step and stop before a call that
         # would cross the cap, keeping enough headroom to still write a summary.

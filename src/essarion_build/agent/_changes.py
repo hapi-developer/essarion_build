@@ -90,7 +90,7 @@ class ChangeLog(BaseModel):
         if absolute.is_file():
             try:
                 before = absolute.read_text(encoding="utf-8")
-                kind = "modify" if before != after else "modify"
+                kind = "modify"
             except (OSError, UnicodeDecodeError):
                 before = None
                 kind = "modify"
@@ -119,16 +119,12 @@ class ChangeLog(BaseModel):
         # patches).
         first_before: dict[str, str | None] = {}
         last_after: dict[str, str | None] = {}
-        kind_of: dict[str, ChangeKind] = {}
         for e in self.entries:
             if e.path not in first_before:
                 first_before[e.path] = e.before
-                kind_of[e.path] = e.kind
             last_after[e.path] = e.after
         out: list[str] = []
         for path in first_before:
-            kind = kind_of[path]
-            # Update kind for files we ended up deleting after creating.
             if last_after[path] is None and first_before[path] is None:
                 continue  # created and then deleted — no net change
             before = first_before[path]

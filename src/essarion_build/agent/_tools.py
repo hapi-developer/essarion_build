@@ -177,11 +177,18 @@ def glob(pattern: str, max_hits: int = 200) -> str:
     """
     hits: list[str] = []
     for p in _SANDBOX_ROOT.glob(pattern):
-        if not p.is_file():
+        # `Path.glob` keeps `..` segments literal, so a pattern like
+        # `../../etc/*` escapes the sandbox and `relative_to` would NOT catch it.
+        # Re-validate each hit against the root exactly like `_resolve` does for
+        # every other file tool, so glob honours the same sandbox boundary.
+        rp = p.resolve()
+        if _SANDBOX_ROOT not in rp.parents and rp != _SANDBOX_ROOT:
             continue
-        if any(part in _SKIP_DIRS for part in p.parts):
+        if not rp.is_file():
             continue
-        hits.append(p.relative_to(_SANDBOX_ROOT).as_posix())
+        if any(part in _SKIP_DIRS for part in rp.parts):
+            continue
+        hits.append(rp.relative_to(_SANDBOX_ROOT).as_posix())
         if len(hits) >= max_hits:
             hits.append("... (truncated)")
             break

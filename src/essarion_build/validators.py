@@ -113,7 +113,7 @@ def validate_python(code: str) -> list[Issue]:
                             severity="info",
                         )
                     )
-    except tokenize.TokenizeError:
+    except tokenize.TokenError:
         # The AST already parsed; if tokenizing fails the code is still valid
         # to run but unusual encoding — skip the comment scan rather than
         # surface a confusing error.

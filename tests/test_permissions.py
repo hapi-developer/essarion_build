@@ -40,3 +40,21 @@ def test_from_config_overrides() -> None:
     assert p.decide("run_shell", {"cmd": "cat file"})[0] == ASK       # shell default → ask
     assert p.decide("run_shell", {"cmd": "terraform destroy"})[0] == DENY
     assert p.decide("read_file", {"path": "x"})[0] == ALLOW           # reads still free
+
+
+def test_explicit_shell_deny_is_not_downgraded_for_risky_commands() -> None:
+    """A configured `shell = "deny"` must block EVERY shell command, including
+    the risky ones — the risk heuristics must not relax an explicit deny down to
+    ask/allow (even under /yolo)."""
+    p = PermissionPolicy.from_config({"shell": "deny"})
+    for cmd in ["ls -l", "sudo apt update", "git push --force origin main", "rm -rf build/"]:
+        assert p.decide("run_shell", {"cmd": cmd})[0] == DENY, cmd
+        assert p.decide("run_shell", {"cmd": cmd}, yolo=True)[0] == DENY, cmd
+
+
+def test_explicit_deny_still_yields_to_a_specific_allow_pattern() -> None:
+    """An explicit allow-pattern is more specific than the blanket shell deny, so
+    it still wins (only the risk-heuristic downgrade is forbidden)."""
+    p = PermissionPolicy.from_config({"shell": "deny", "allow": [r"\bnpm test\b"]})
+    assert p.decide("run_shell", {"cmd": "npm test"})[0] == ALLOW
+    assert p.decide("run_shell", {"cmd": "npm publish"})[0] == DENY

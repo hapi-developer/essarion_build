@@ -75,6 +75,8 @@ from .tools import (
     DESKTOP_TOOL_NAMES,
     register_computer_tools,
     register_desktop_tools,
+    unregister_computer_tools,
+    unregister_desktop_tools,
 )
 
 __all__ = [
@@ -100,6 +102,7 @@ __all__ = [
     "COMPUTER_TOOLS",
     "COMPUTER_TOOL_NAMES",
     "register_computer_tools",
+    "unregister_computer_tools",
     # Desktop tier
     "DesktopBackend",
     "FakeDesktopBackend",
@@ -121,6 +124,7 @@ __all__ = [
     "DESKTOP_TOOLS",
     "DESKTOP_TOOL_NAMES",
     "register_desktop_tools",
+    "unregister_desktop_tools",
     "Expectation",
     "ExpectationResult",
     "parse_expectation",
