@@ -361,6 +361,12 @@ def run_agent(argv: list[str] | None = None) -> int:
     bind_tools(session.cwd)
     _register_sdk_tools()  # makes <tool_call> available across the SDK
 
+    # Connect any configured MCP servers ([[mcp_servers]] in config) so their
+    # tools are callable this session. Quiet when none are configured.
+    from ._mcp import shutdown_all as _mcp_shutdown, startup_from_config
+
+    startup_from_config(console, session.cwd)
+
     from .. import list_skills
 
     task = _task_text(args)
@@ -373,6 +379,7 @@ def run_agent(argv: list[str] | None = None) -> int:
             run_task(console, session, task)
         finally:
             shutdown_manager()
+            _mcp_shutdown()
         return 0
 
     # Show a banner that includes the project info.
@@ -386,6 +393,7 @@ def run_agent(argv: list[str] | None = None) -> int:
         from ._background import shutdown_manager
 
         shutdown_manager()
+        _mcp_shutdown()
         console.print("\n[brand]bye.[/brand]")
     return 0
 

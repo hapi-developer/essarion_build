@@ -1210,6 +1210,52 @@ def _cmd_hooks(console: Console, session: Session, args: str) -> CommandResult:
     return "continue"
 
 
+def _cmd_mcp(console: Console, session: Session, args: str) -> CommandResult:
+    """Show connected MCP servers + their tools; `/mcp reconnect` retries.
+
+    Servers are declared as `[[mcp_servers]]` blocks in `.essarion/config.toml`
+    (or `~/.config/essarion/config.toml`).
+    """
+    from rich.table import Table
+
+    from . import _mcp
+
+    mgr = _mcp.current_manager()
+
+    if args.strip().lower() in {"reconnect", "reload", "retry"}:
+        mgr.shutdown()
+        _mcp.startup_from_config(console, session.cwd)
+
+    if not mgr.clients and not mgr.errors:
+        console.print("[meta]no MCP servers configured.[/meta]")
+        console.print(
+            "[hint]declare one in .essarion/config.toml:\n"
+            "  [[mcp_servers]]\n"
+            '  name = "github"\n'
+            '  command = "npx -y @modelcontextprotocol/server-github"\n'
+            "then /mcp reconnect. Its tools become callable as "
+            "mcp__github__<tool>.[/hint]"
+        )
+        return "continue"
+
+    table = Table(title="MCP servers", title_style="brand")
+    table.add_column("server", style="key")
+    table.add_column("status", style="meta")
+    table.add_column("tools", style="meta")
+    for name, client in sorted(mgr.clients.items()):
+        status = "connected" if client.alive else f"dead ({client.dead_reason or 'stopped'})"
+        tools = ", ".join(t["name"] for t in client.tools[:8])
+        if len(client.tools) > 8:
+            tools += f" (+{len(client.tools) - 8} more)"
+        table.add_row(name, status, tools or "—")
+    for name, err in sorted(mgr.errors.items()):
+        if name not in mgr.clients:
+            table.add_row(name, f"failed — {err[:80]}", "—")
+    console.print(table)
+    console.print("[hint]/mcp reconnect to retry failed/dead servers.[/hint]")
+    return "continue"
+
+
 def _cmd_summary(console: Console, session: Session, args: str) -> CommandResult:
     """One-paragraph summary of what the agent did this session.
 
@@ -1554,6 +1600,7 @@ COMMANDS: dict[str, tuple[Callable, str]] = {
     "/summary": (_cmd_summary, "one-paragraph summary of this session — useful for commits/PRs"),
     "/workflows": (_cmd_workflows_list, "list bundled workflows + their slash shortcuts"),
     "/hooks": (_cmd_hooks, "list lifecycle hooks from .essarion/config.toml"),
+    "/mcp": (_cmd_mcp, "list connected MCP servers + tools; /mcp reconnect retries"),
     "/keys": (_cmd_keys, "show provider keys, or set one: /keys set <provider> [key]"),
     "/reload": (_cmd_reload, "hot-reload .env / config without restarting"),
     "/commands": (_cmd_help, "list every command (alias of /help)"),

@@ -84,6 +84,21 @@ classic **plan → approve → hand-apply** flow:
    `--plan-first`) gives you the plan + verdict BEFORE any code is paid for,
    so you can edit, reject, or send it back. Most agents force one mode; this
    gives you both.
+3. **Parallel subagents with context isolation.** On a big task the agent
+   fans out up to 8 scoped workers (`spawn_subagents`) that run
+   *concurrently* — sweep these modules, audit that area, build this piece —
+   each in its **own fresh context**. Only their final summaries return to
+   the lead agent, so a wide exploration costs the parent a paragraph
+   instead of a context window. Subagents can be marked `read_only`, can't
+   prompt you, can't spawn further subagents, and inherit your permission
+   policy (anything that would *ask* is denied instead). Their token spend
+   rolls into the same turn meter and budget cap.
+3. **MCP — plug in external tools.** Declare any MCP server in
+   `.essarion/config.toml` (`[[mcp_servers]]`: GitHub, Postgres, Slack,
+   your internal tools…) and its tools become first-class agent tools
+   (`mcp__github__create_issue`), listed in the manifest and callable in
+   the autonomous loop. Zero-dependency stdio JSON-RPC client built in —
+   `/mcp` shows live servers + tools, `/mcp reconnect` retries.
 3. **Code intelligence, not blind grep.** Every turn the agent gets an
    Aider-style *repo map* — a ranked, token-budgeted skeleton of the codebase's
    key classes/functions — and tools to navigate it: `repo_map`,
@@ -134,13 +149,17 @@ classic **plan → approve → hand-apply** flow:
    model rubber-stamps. The cheap-ensemble take on "make cheap models reason like
    a better one." (On OpenRouter, write on `openai/…` and review on `anthropic/…`
    with one key.)
-5. **Project-aware.** `essarion init` creates `.essarion/{config.toml,
-   sessions/, memory.md}` per repo. The agent auto-detects the project
-   root from `.essarion/`, `.git/`, `pyproject.toml`, etc. Per-project
-   memory (`/remember <fact>`) and config flow into every turn. It also reads
-   **AGENTS.md** (monorepo-nested, nearest-wins) plus `CLAUDE.md` /
-   `.cursorrules` / `.github/copilot-instructions.md`, so a repo already set up
-   for another agent steers this one too.
+5. **Project-aware, with self-accumulating memory.** `essarion init` creates
+   `.essarion/{config.toml, sessions/, memory.md}` per repo. The agent
+   auto-detects the project root from `.essarion/`, `.git/`, `pyproject.toml`,
+   etc. Per-project memory and config flow into every turn — and the agent
+   **maintains its own memory**: when it learns a durable fact mid-run (a
+   convention, a gotcha, where something lives) it saves it with the
+   `remember` tool, deduplicated and secret-screened, so the next session
+   starts already knowing it. Curate by hand with `/remember` / `/forget`.
+   It also reads **AGENTS.md** (monorepo-nested, nearest-wins) plus
+   `CLAUDE.md` / `.cursorrules` / `.github/copilot-instructions.md`, so a repo
+   already set up for another agent steers this one too.
 6. **Inline tool execution during planning.** The model can emit
    `<tool_call name="read_file">…</tool_call>` inside its plan; the agent
    runs the read-only tool (read_file, grep, glob, list_dir, find_files,
@@ -308,6 +327,13 @@ Type `/help` inside the agent for the categorized view. The headline ones:
 | `/skills [auto\|all\|none]` | switch picker mode |
 | `/remember <fact>` | append to `.essarion/memory.md` (per-project) |
 | `/forget <pattern>` | remove facts matching a substring |
+
+**extensibility (MCP)**
+
+| Command | Description |
+|---|---|
+| `/mcp` | list connected MCP servers + the tools they expose |
+| `/mcp reconnect` | retry failed/dead servers after fixing config |
 
 **project & files**
 

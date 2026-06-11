@@ -125,6 +125,16 @@ _STARTER_CONFIG = """# Per-project Essarion config. Loaded by `essarion` at REPL
 # event = "pre_tool"
 # matcher = "run_shell"
 # command = "case \"$ESSARION_HOOK_COMMAND\" in *'rm -rf'*) echo 'blocked: rm -rf' >&2; exit 2;; esac"
+
+# MCP servers — external tool servers (stdio transport). Each tool a server
+# advertises becomes callable by the agent as mcp__<name>__<tool>. `/mcp`
+# lists what's connected; `/mcp reconnect` retries after a config change.
+#
+# [[mcp_servers]]
+# name = "github"
+# command = "npx -y @modelcontextprotocol/server-github"
+# # env = { GITHUB_PERSONAL_ACCESS_TOKEN = "ghp_..." }  # merged into the env
+# # cwd = ""                                            # default: project root
 """
 
 _STARTER_GITIGNORE = """# sessions can contain prompts + generated code — usually don't check them in

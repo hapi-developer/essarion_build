@@ -532,6 +532,34 @@ def edit_symbol(path: str, symbol: str, new_source: str) -> str:
     )
 
 
+def remember(fact: str) -> str:
+    """Persist one durable project fact to project memory
+    (`.essarion/memory.md`) — the agent reads it back at the start of every
+    future turn. Self-accumulating memory: the agent saves what it learns
+    (conventions, gotchas, where things live) without being asked.
+
+    Facts are deduplicated; session noise and anything secret-shaped is
+    refused. Manage by hand with `/remember` and `/forget`.
+    """
+    from ._memory import load_memory
+    from ._ui import redact_secrets
+
+    fact = " ".join((fact or "").split())
+    if not fact:
+        raise ValueError("fact must be non-empty")
+    if len(fact) > 300:
+        fact = fact[:299].rstrip() + "…"
+    if redact_secrets(fact) != fact:
+        raise ValueError("refusing to store a secret-shaped value in memory")
+    mem = load_memory(_SANDBOX_ROOT)
+    before = len(mem.facts)
+    mem.add_fact(fact)
+    if len(mem.facts) == before:
+        return "already in memory (skipped duplicate)"
+    mem.save()
+    return f"remembered: {fact}"
+
+
 def delete_file(path: str) -> str:
     """Delete a file under the sandbox root.
 
@@ -690,6 +718,7 @@ def register_all() -> None:
     sdk_tools.register_tool("edit_symbol", description="replace a function/class by name (AST-anchored)")(edit_symbol)
     sdk_tools.register_tool("delete_file", description="delete a file (undoable)")(delete_file)
     sdk_tools.register_tool("run_shell", description="run a shell command (blocking)")(run_shell)
+    sdk_tools.register_tool("remember", description="save one durable project fact to memory")(remember)
     sdk_tools.register_tool("start_background", description="start a background task; returns id")(start_background)
     sdk_tools.register_tool("check_background", description="status + recent output of a task")(check_background)
     sdk_tools.register_tool("wait_background", description="block until a task finishes")(wait_background)

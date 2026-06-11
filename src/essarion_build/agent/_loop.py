@@ -1080,7 +1080,7 @@ def run_turn_autonomous(console, session: Session, task: str):
     # desktop_* tools and launch backends for this turn. Never on by default.
     from . import _computer
 
-    allow = set(_agent_exec.AUTONOMOUS_ALLOW)
+    allow = _agent_exec.default_allow()
     extra_parts: list[str] = []
     backend = None
     desktop_backend = None
@@ -1249,6 +1249,9 @@ def repl(console, session: Session) -> None:
             except OSError as e:
                 console.print(f"[warn]could not save session: {e}[/warn]")
             shutdown_manager()  # kill non-detached background tasks
+            from ._mcp import shutdown_all as _mcp_shutdown
+
+            _mcp_shutdown()  # stop any connected MCP servers
             console.print("[brand]bye.[/brand]")
             return
         if cmd_result is not None:

@@ -40,9 +40,20 @@ Legend: ✅ shipped · 🟡 partial · ⭕ open goal (not built yet)
   `[[hooks]]` in `.essarion/config.toml`. `pre_tool` exit-2 blocks a tool
   (Claude-Code parity); `post_tool` output folds into the tool result. Format
   on write, enforce command policy, notify on completion. `_hooks.py`, `/hooks`.
-- 🟡 **Memory** — project memory via `/remember` + `.essarion/`. A `CLAUDE.md`
-  auto-read and self-accumulating memory are open.
-- ⭕ **Subagents** · ⭕ **MCP** · ⭕ **Plugins / marketplaces**
+- ✅ **Memory** — project memory via `/remember` + `.essarion/`, auto-read of
+  AGENTS.md / CLAUDE.md / `.cursorrules` (cross-tool conventions), and
+  **self-accumulating memory**: the agent persists durable facts itself with
+  the `remember` tool (deduplicated, secret-screened) and reads them back
+  every turn. (`_memory.py`, `_conventions.py`)
+- ✅ **Subagents** — `spawn_subagents` fans out up to 8 **parallel,
+  context-isolated** workers; only their summaries return to the lead agent.
+  Read-only option, non-interactive (ask → deny), no recursion, tighter
+  budgets, usage rolls into the turn meter. (`_subagents.py`)
+- ✅ **MCP** — `[[mcp_servers]]` in config connects any stdio MCP server; its
+  tools become first-class `mcp__<server>__<tool>` tools in the autonomous
+  loop. `/mcp` lists servers + tools, `/mcp reconnect` retries. Zero-dep
+  JSON-RPC 2.0 client. (`_mcp.py`)
+- ⭕ **Plugins / marketplaces**
 
 ## Automation & orchestration
 - 🟡 **Headless / SDK** — `--task` one-shot + the Python SDK (`reason`/`generate`).
@@ -51,8 +62,11 @@ Legend: ✅ shipped · 🟡 partial · ⭕ open goal (not built yet)
   · ⭕ **Automated code review**
 
 ## Computer & browser use
-- ⭕ **Computer use** — open goal (intentionally deferred for now).
-- ⭕ **Browser use** — open goal.
+- ✅ **Browser use** — opt-in (`/computer`, `--computer-use`): the agent drives
+  a real headless browser with a reactive digest (console errors, network
+  failures, DOM changes), `expect=` predictions verified deterministically.
+- ✅ **Desktop control** — explicit opt-in (`/desktop`, `--desktop`): real
+  mouse/keyboard/screen with a screen-diff observer.
 
 ---
 
@@ -63,7 +77,11 @@ Legend: ✅ shipped · 🟡 partial · ⭕ open goal (not built yet)
   the single human checkpoint; everything after runs on disk and is undoable.
 - Hooks: `pre_tool`/`post_tool`/`user_prompt`/`session_start`/`stop`, wired
   through the sandboxed tools and both turn paths, surfaced in the cloud worker.
+- **v0.4.0 — the extensibility trio**: MCP (`_mcp.py`), parallel
+  context-isolated subagents (`_subagents.py`), and self-accumulating memory
+  (the `remember` tool). All zero-dependency, all in both turn paths.
 
 ### Suggested next open goal
-**MCP** — connect external tools/services and let servers push events (CI,
-alerts) into a session. After that, subagents or scheduled tasks. Say the word.
+**Scheduled tasks + automated code review** — a `/loop`-style recurring runner
+and a CI surface (GitHub Action) that reviews PRs with the crosscheck ensemble.
+After that: plugins/marketplaces, or the IDE surfaces. Say the word.
