@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **`web_fetch` is now SSRF-guarded.** The tool fetches URLs the *model*
+  chooses, and that choice can be steered by untrusted content the agent just
+  read — so a fetch could be aimed at the cloud metadata endpoint
+  (`169.254.169.254`), `localhost`, or a private-range host (in the cloud
+  product each session is a container with internal sidecars). `web_fetch` now
+  refuses any URL whose host resolves to a non-public address — private,
+  loopback, link-local, multicast, reserved, IPv4-mapped — and re-validates
+  every redirect hop, so a public URL that 302s inward is caught too.
+  Still standard-library only (`agent/_ssrf.py`).
+
 ## [0.4.0] - 2026-06-11
 
 The extensibility release — the three biggest items on the roadmap land at

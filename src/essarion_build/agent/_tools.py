@@ -250,13 +250,24 @@ def web_fetch(url: str, max_chars: int = 8000) -> str:
     import urllib.error
     import urllib.request
 
+    from ._ssrf import UnsafeUrlError, assert_public_url, build_safe_opener
+
     if not url.startswith(("http://", "https://")):
         url = "https://" + url
+    # SSRF guard: the URL is model-chosen and can be steered by untrusted
+    # content, so refuse internal targets (cloud metadata, localhost, RFC-1918)
+    # up front and on every redirect hop.
+    try:
+        assert_public_url(url)
+    except UnsafeUrlError as e:
+        return f"(refused to fetch {url}: {e})"
     req = urllib.request.Request(url, headers={"User-Agent": "essarion-build-agent"})
     try:
-        with urllib.request.urlopen(req, timeout=20) as resp:  # noqa: S310 - explicit http(s)
+        with build_safe_opener().open(req, timeout=20) as resp:  # noqa: S310 - explicit http(s)
             ctype = resp.headers.get("Content-Type", "")
             raw = resp.read(2_000_000)
+    except UnsafeUrlError as e:
+        return f"(refused to fetch {url}: redirected to a non-public address: {e})"
     except urllib.error.URLError as e:
         return f"(could not fetch {url}: {getattr(e, 'reason', e)})"
     except Exception as e:  # noqa: BLE001 - surface, don't crash
