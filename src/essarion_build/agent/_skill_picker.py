@@ -54,13 +54,12 @@ def _tokenize(s: str) -> list[str]:
 _SKILL_CORPUS_CACHE: dict[str, set[str]] = {}
 
 
-def _skill_corpus(name: str) -> set[str]:
-    """The tokens that count toward a skill's relevance score."""
-    if name in _SKILL_CORPUS_CACHE:
-        return _SKILL_CORPUS_CACHE[name]
-    body = load_skill(name)
-    # Take the H1 line + the first ~10 bullet-line opening words. Enough
-    # signal to match against keywords, not so much that everything matches.
+def _corpus_from_body(name: str, body: str) -> set[str]:
+    """Tokens that count toward a skill's relevance score, from its markdown.
+
+    Take the H1 line + the first ~10 bullet-line opening words — enough signal
+    to match against keywords, not so much that everything matches — and fold
+    in the skill name itself (split by underscore)."""
     keep_lines: list[str] = []
     for line in body.splitlines():
         line = line.strip()
@@ -71,12 +70,30 @@ def _skill_corpus(name: str) -> set[str]:
         if len(keep_lines) >= 12:
             break
     tokens = set(_tokenize(" ".join(keep_lines)))
-    # Also fold the skill name itself in (split by underscore).
     for piece in name.split("_"):
         if len(piece) > 2:
             tokens.add(piece.lower())
+    return tokens
+
+
+def _skill_corpus(name: str) -> set[str]:
+    """The tokens that count toward a bundled skill's relevance score (cached)."""
+    if name in _SKILL_CORPUS_CACHE:
+        return _SKILL_CORPUS_CACHE[name]
+    tokens = _corpus_from_body(name, load_skill(name))
     _SKILL_CORPUS_CACHE[name] = tokens
     return tokens
+
+
+def _corpus_for(name: str, extra_bodies: dict[str, str] | None) -> set[str]:
+    """Corpus for any skill name — a project-learned one (uncached, since its
+    body can change between turns) takes precedence over a bundled one."""
+    if extra_bodies and name in extra_bodies:
+        return _corpus_from_body(name, extra_bodies[name])
+    try:
+        return _skill_corpus(name)
+    except FileNotFoundError:
+        return set()
 
 
 def pick_skills(
@@ -85,12 +102,17 @@ def pick_skills(
     top_k: int = 5,
     available: list[str] | None = None,
     always_include: list[str] | None = None,
+    extra_bodies: dict[str, str] | None = None,
 ) -> list[str]:
     """Pick the `top_k` most-relevant skills for `task` from `available`.
 
     Returns the picks in score order. `_ALWAYS_INCLUDE` skills are added
     at the end if they weren't already in the top-K (so they take a slot
     *above* `top_k`, not inside).
+
+    `extra_bodies` carries project-learned skills (``{name: markdown}``) so
+    they can be ranked next to the bundled ones; pass their names in
+    `available` too. A learned skill whose name shadows a bundled one wins.
     """
     pool = available if available is not None else list_skills()
     always = always_include if always_include is not None else _ALWAYS_INCLUDE
@@ -101,7 +123,7 @@ def pick_skills(
 
     scored: list[tuple[int, str]] = []
     for name in pool:
-        corpus = _skill_corpus(name)
+        corpus = _corpus_for(name, extra_bodies)
         if not corpus:
             scored.append((0, name))
             continue
@@ -121,7 +143,7 @@ def pick_skills(
     return picks
 
 
-def explain_pick(task: str, picks: list[str]) -> str:
+def explain_pick(task: str, picks: list[str], extra_bodies: dict[str, str] | None = None) -> str:
     """A one-line human-readable reason the picker chose what it chose.
 
     Just lists matching tokens per skill. Useful for the UI's footer or
@@ -130,7 +152,7 @@ def explain_pick(task: str, picks: list[str]) -> str:
     task_tokens = set(_tokenize(task))
     out: list[str] = []
     for name in picks:
-        corpus = _skill_corpus(name)
+        corpus = _corpus_for(name, extra_bodies)
         hits = sorted(task_tokens & corpus)[:3]
         if hits:
             out.append(f"{name} ({', '.join(hits)})")

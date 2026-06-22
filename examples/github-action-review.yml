@@ -1,0 +1,76 @@
+# essarion-build — automated PR review with a cross-model second opinion.
+#
+# Copy this to `.github/workflows/essarion-review.yml` in your repo. On every
+# pull request it reviews the diff with essarion's plan→selfcheck loop AND an
+# INDEPENDENT second model (the crosscheck), then posts the findings as a PR
+# comment. Two different model families review the change — where they disagree
+# is where bugs hide.
+#
+# Setup: add an `OPENROUTER_API_KEY` repository secret (one key reaches both
+# the builder and the reviewer models). Swap in ANTHROPIC/OPENAI/GEMINI keys
+# and `--provider` if you prefer going direct.
+
+name: essarion review
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: write   # to post the review comment
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0          # need the base ref to diff against
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install essarion-build
+
+      - name: Review the diff (cheap model builds, a different one cross-examines)
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: |
+          essarion-build review \
+            --base "origin/${{ github.base_ref }}" \
+            --repo . \
+            --provider openrouter \
+            --model openai/gpt-4o-mini \
+            --crosscheck-model anthropic/claude-haiku-4-5 \
+            > review.md
+          cat review.md
+
+      - name: Upsert the review as a PR comment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const body = fs.readFileSync('review.md', 'utf8');
+            const marker = '## 🔎 essarion-build review';
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const existing = comments.find(c => c.body && c.body.startsWith(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                comment_id: existing.id, body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: context.issue.number, body,
+              });
+            }
+
+      # Optional: gate the PR on the cross-model reviewer agreeing. Add
+      # `--fail-on-disagree` to the review step above; it exits 3 (a failing
+      # check) when the second model raises concerns the first one missed.

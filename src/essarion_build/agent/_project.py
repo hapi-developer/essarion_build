@@ -153,6 +153,9 @@ def init_project(path: str | Path | None = None) -> Project:
     essarion = root / ".essarion"
     essarion.mkdir(exist_ok=True)
     (essarion / "sessions").mkdir(exist_ok=True)
+    # Learned skills the agent distills from experience live here, ranked
+    # alongside the bundled skills on every future task.
+    (essarion / "skills").mkdir(exist_ok=True)
     cfg = essarion / "config.toml"
     if not cfg.exists():
         cfg.write_text(_STARTER_CONFIG, encoding="utf-8")

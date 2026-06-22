@@ -49,7 +49,7 @@ AUTONOMOUS_ALLOW = {
     "repo_map", "outline", "find_symbol", "web_fetch",
     "write_file", "apply_diff", "edit_symbol", "delete_file", "run_shell",
     "start_background", "check_background", "wait_background",
-    "kill_background", "list_background", "remember",
+    "kill_background", "list_background", "remember", "distill_skill", "recall",
 }
 
 
@@ -211,6 +211,14 @@ def _system_prompt(ctx: Context, memory: str = "", *, subagents: bool = False) -
         "decision the user made — save it once with:\n"
         "  <tool_call name=\"remember\">{\"fact\": \"tests must run with -p no:cacheprovider\"}</tool_call>\n"
         "  Only genuinely reusable facts; never session noise or secrets.\n"
+        "- When you work out a REUSABLE procedure whose lesson generalizes to "
+        "future tasks here — how to add a migration in this repo, a non-obvious "
+        "gotcha and its fix, the steps to wire a new component — distill it into a "
+        "short, titled skill so you (and teammates) get it for free next time:\n"
+        "  <tool_call name=\"distill_skill\">{\"name\": \"add_migration\", \"body\": "
+        "\"# Add a migration\\n- Create a file under migrations/ named NNNN_desc.sql\\n"
+        "- Run `make migrate` to apply; tests pick it up automatically\"}</tool_call>\n"
+        "  Keep it a brief, not a transcript; one skill per durable lesson.\n"
         "- When the goal is complete (or the question answered), emit exactly:\n"
         "  <done>a one-line summary of what you did</done>"
     )
@@ -317,7 +325,8 @@ def _verb_for(name: str, existed: bool) -> str:
         "web_fetch": "Fetched", "start_background": "Started",
         "check_background": "Checked task", "wait_background": "Waited on task",
         "kill_background": "Killed task", "list_background": "Listed tasks",
-        "remember": "Remembered",
+        "remember": "Remembered", "distill_skill": "Distilled skill",
+        "recall": "Recalled",
     }.get(name, f"Used {name}")
 
 
@@ -329,6 +338,11 @@ def _target_for(name: str, args: dict[str, Any]) -> str:
     if name == "remember":
         fact = str(args.get("fact", ""))
         return fact if len(fact) <= 60 else fact[:59].rstrip() + "…"
+    if name == "distill_skill":
+        return str(args.get("name", ""))
+    if name == "recall":
+        q = str(args.get("query", ""))
+        return q if len(q) <= 48 else q[:47].rstrip() + "…"
     if name in {"write_file", "apply_diff", "delete_file", "read_file", "outline"}:
         return str(args.get("path", ""))
     if name == "edit_symbol":

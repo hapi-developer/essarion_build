@@ -5,7 +5,51 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.5.0] - 2026-06-22
+
+The self-improvement + automation release — a direct answer to the signature
+moats of Hermes Agent (Nous Research), on essarion's terms. The agent now
+*gets better the more you use it*: it distills reusable skills from experience,
+recalls what past sessions decided, runs recurring tasks unattended, and reviews
+pull requests in CI with an INDEPENDENT cross-model second opinion. Plus a full
+competitive teardown in `docs/COMPETITIVE-HERMES.md`. All still zero-dependency
+(standard library only), in both the autonomous and plan-first turn paths.
+
+### Added
+
+- **Self-improving skills (`distill_skill` tool · `/distill` · `.essarion/skills/`).**
+  After working out a reusable lesson — a house convention, a gotcha and its
+  fix, the steps to wire a new component — the agent distills it into a short,
+  titled markdown skill saved with the repo. The skill picker then ranks these
+  project-learned skills *alongside* the 54 bundled ones on every future task,
+  so the agent measurably improves at *your* codebase. Quality-gated on the way
+  in: secret-screened, size-capped, de-duplicated, name-slugified. A
+  project-learned skill that shadows a bundled name wins. Curate by hand with
+  `/distill <name>: <body>` / `/distill forget <name>`; `essarion init` now
+  creates `.essarion/skills/`. (`agent/_learned_skills.py`)
+- **Cross-session recall (`recall` tool · `/recall`).** Zero-dependency
+  full-text search across saved sessions — the answer to "didn't we already do
+  this?". Ranks each past turn by how often the query's terms appear across its
+  task/plan/verdict/summary/actions (a hit in the task line counts most), newest
+  first, over both the per-project and global session stores. The agent can call
+  it mid-task; `/recall <query>` surfaces it in the REPL. (`agent/_session.py`)
+- **Scheduled / recurring tasks (`essarion schedule` · `/schedule`).** A
+  cron-style automation surface for unattended runs — daily code-health reports,
+  nightly dependency audits, a weekly "what changed" digest, described once in
+  natural language. The store is plain, diffable JSON under `.essarion/`; each
+  due job runs as a one-shot agent in its own process (so a long or crashing job
+  can't wedge the scheduler) and `next_run` catches up past missed windows.
+  Drive it from system/CI cron with `essarion schedule run-due`, or keep it
+  foreground with `--loop`. (`agent/_schedule.py`)
+- **Automated code review in CI (`essarion-build review` + a GitHub Action).**
+  Reviews a diff (`--diff`, `--base <ref>`, or `git diff`) through the
+  plan→selfcheck loop and — uniquely — gets an INDEPENDENT cross-model second
+  opinion, then emits PR-ready markdown (or JSON). `--fail-on-disagree` exits 3
+  so CI can gate on the second model raising concerns the first missed. A
+  copy-paste workflow ships in `examples/github-action-review.yml`; docs in
+  `docs/CI.md`. This puts essarion's unique crosscheck on every pull request.
+- **Competitive analysis** — `docs/COMPETITIVE-HERMES.md`: a sourced, honest
+  head-to-head with Hermes Agent, including where Hermes leads and why.
 
 ### Security
 

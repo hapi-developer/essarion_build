@@ -72,6 +72,13 @@ classic **plan → approve → hand-apply** flow:
 
 ### Why use the agent (over Claude Code / Codex / Aider / Cursor)
 
+> Comparing against a *personal* agent like **Hermes Agent** (Nous Research)?
+> essarion now matches its self-improvement story — skills distilled from
+> experience, cross-session recall, scheduled tasks — while keeping the coding
+> moats Hermes lacks (adaptive reasoning depth, a cross-model review gate, AST
+> code intelligence, hard token discipline). Full teardown:
+> [`docs/COMPETITIVE-HERMES.md`](docs/COMPETITIVE-HERMES.md).
+
 1. **Adaptive reasoning depth.** Defaults to `effort="auto"` — a tiny
    triage call sizes every task and routes trivial work to a 1-call plan
    while reserving the deep critique→revise loop for tasks with real
@@ -160,6 +167,34 @@ classic **plan → approve → hand-apply** flow:
    It also reads **AGENTS.md** (monorepo-nested, nearest-wins) plus
    `CLAUDE.md` / `.cursorrules` / `.github/copilot-instructions.md`, so a repo
    already set up for another agent steers this one too.
+5. **Self-improving skills — it gets better at *your* codebase.** Beyond
+   one-line memory facts, the agent **distills reusable skills from experience**:
+   after working out a non-obvious procedure (how to add a migration here, a
+   gotcha and its fix, the steps to wire a new component) it saves a short,
+   titled skill into `.essarion/skills/` with the `distill_skill` tool. The skill
+   picker then ranks these project-learned skills *alongside* the 54 bundled ones
+   on every future task — so the agent measurably sharpens on this repo the more
+   you use it. Quality-gated on the way in: secret-screened, size-capped,
+   deduplicated. Curate by hand with `/distill`; they live with the repo, so the
+   whole team inherits them and they're reviewable in a PR. (This is the rigorous,
+   auditable answer to Hermes Agent's "creates skills from experience.")
+6. **Cross-session recall.** "Didn't we already do this?" The agent can search
+   its own past sessions — `recall` (a tool it calls mid-task) and `/recall
+   <query>` — with zero-dependency full-text ranking over what every prior turn
+   planned, decided, and built, across the per-project and global session stores.
+7. **Runs unattended (scheduled tasks).** A cron-style automation surface:
+   `essarion schedule add "audit deps for CVEs" --every 1d` records a recurring
+   task to plain JSON under `.essarion/`; `essarion schedule run-due` (driven by
+   system or CI cron, or a foreground `--loop`) runs whatever's due — each job in
+   its own process so a long one can't wedge the rest. Daily reports, nightly
+   audits, weekly digests, in natural language. `/schedule` manages it in-REPL.
+8. **Cross-model code review in CI.** `essarion-build review` reviews a diff with
+   the plan→selfcheck loop *and* an INDEPENDENT second model (the crosscheck),
+   emitting PR-ready markdown; `--fail-on-disagree` gates the build when the two
+   models disagree. A copy-paste GitHub Action ships in
+   `examples/github-action-review.yml`. No mainstream coding agent puts an
+   adversarial cross-model gate on every pull request — this does. See
+   [`docs/CI.md`](docs/CI.md).
 6. **Inline tool execution during planning.** The model can emit
    `<tool_call name="read_file">…</tool_call>` inside its plan; the agent
    runs the read-only tool (read_file, grep, glob, list_dir, find_files,
@@ -283,6 +318,7 @@ Type `/help` inside the agent for the categorized view. The headline ones:
 |---|---|
 | `/whoami` | one-screen status: project + model + memory + budget + bg tasks |
 | `/history` | list this session's turns |
+| `/recall <query>` | full-text recall across past sessions ("didn't we already do this?") |
 | `/save` / `/load` | persist / list saved sessions |
 | `/quit` | exit (saves; kills non-detached bg tasks) |
 
@@ -324,7 +360,8 @@ Type `/help` inside the agent for the categorized view. The headline ones:
 
 | Command | Description |
 |---|---|
-| `/skills [auto\|all\|none]` | switch picker mode |
+| `/skills [auto\|all\|none]` | switch picker mode (also lists learned skills) |
+| `/distill <name>: <body>` | curate a project-learned skill (the agent also distills these itself) |
 | `/remember <fact>` | append to `.essarion/memory.md` (per-project) |
 | `/forget <pattern>` | remove facts matching a substring |
 
@@ -334,6 +371,14 @@ Type `/help` inside the agent for the categorized view. The headline ones:
 |---|---|
 | `/mcp` | list connected MCP servers + the tools they expose |
 | `/mcp reconnect` | retry failed/dead servers after fixing config |
+
+**automation**
+
+| Command | Description |
+|---|---|
+| `/schedule` | list recurring tasks |
+| `/schedule add <interval> <task>` | schedule a task (e.g. `/schedule add 1d audit deps`) |
+| `/schedule rm <id>` / `/schedule run <id>` | remove a job / run one now |
 
 **project & files**
 
@@ -1010,7 +1055,23 @@ essarion-build generate "write a JWT validator" --repo ./src --stream
 
 # Pipe a task from stdin
 git diff main | essarion-build reason "review this change" -
+
+# Review a PR diff with an INDEPENDENT cross-model second opinion (the CI surface)
+essarion-build review --base origin/main \
+  --model openai/gpt-4o-mini --crosscheck-model anthropic/claude-haiku-4-5
+essarion-build review --diff pr.diff --crosscheck-model anthropic/claude-haiku-4-5 \
+  --fail-on-disagree --json          # exit 3 if the 2nd model disagrees → gate CI
+
+# Recurring, unattended tasks (cron-style). Drive run-due from system/CI cron.
+essarion schedule add "audit deps for CVEs and summarize" --every 1d
+essarion schedule list
+essarion schedule run-due            # run everything due (what cron calls)
 ```
+
+A ready-to-use GitHub Action for cross-model PR review ships in
+[`examples/github-action-review.yml`](examples/github-action-review.yml); see
+[`docs/CI.md`](docs/CI.md). A full, sourced comparison with Hermes Agent is in
+[`docs/COMPETITIVE-HERMES.md`](docs/COMPETITIVE-HERMES.md).
 
 ## Testing your essarion-build code
 

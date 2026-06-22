@@ -23,5 +23,11 @@ export OPENROUTER_API_KEY=sk-or-...
 
 Run any of them with `python examples/01_quick_start.py`.
 
+## CI templates
+
+| File | What it shows |
+|---|---|
+| [`github-action-review.yml`](github-action-review.yml) | GitHub Action: review every PR with a cross-model second opinion (`essarion-build review`). Copy to `.github/workflows/`. See [`../docs/CI.md`](../docs/CI.md). |
+
 Examples 7 and 8 are self-contained: 7 uses a scripted provider so no key
 is needed; 8 demonstrates caching live against OpenRouter.

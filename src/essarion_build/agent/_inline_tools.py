@@ -27,7 +27,7 @@ from .. import tools as sdk_tools
 
 # Read-only tools the agent allows the model to call during planning.
 _INLINE_ALLOW = {"read_file", "list_dir", "grep", "find_files", "glob",
-                 "repo_map", "outline", "find_symbol"}
+                 "repo_map", "outline", "find_symbol", "recall"}
 
 # How many rounds of "plan -> tool calls -> replan" before we stop.
 _MAX_TOOL_ROUNDS = 3

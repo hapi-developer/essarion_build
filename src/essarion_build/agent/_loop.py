@@ -230,16 +230,27 @@ def _autoload_files(task: str, cwd: Path, ctx: Context, console) -> list[str]:
     return loaded
 
 
-def _pick_skills_for(task: str, mode: str) -> tuple[list[str], str]:
-    """Apply the session's skills mode to a task."""
+def _pick_skills_for(
+    task: str, mode: str, *, learned: dict[str, str] | None = None
+) -> tuple[list[str], str]:
+    """Apply the session's skills mode to a task.
+
+    `learned` carries project-learned skills (``{name: body}``) distilled into
+    `.essarion/skills/`; they're ranked next to the bundled skills in `auto`
+    mode and all loaded in `all` mode."""
+    learned = learned or {}
     if mode == "none":
         return [], ""
-    if mode == "all":
-        from .. import list_skills
+    from .. import list_skills
 
-        return list_skills(), "all skills loaded (mode=all)"
-    picks = pick_skills(task)
-    return picks, explain_pick(task, picks)
+    bundled = list_skills()
+    if mode == "all":
+        names = bundled + [n for n in learned if n not in set(bundled)]
+        suffix = f" + {len(learned)} learned" if learned else ""
+        return names, f"all skills loaded (mode=all){suffix}"
+    pool = list(dict.fromkeys(bundled + list(learned)))
+    picks = pick_skills(task, available=pool, extra_bodies=learned or None)
+    return picks, explain_pick(task, picks, extra_bodies=learned or None)
 
 
 def _record_phase_usage(turn: TaskTurn, session: Session, usage: Usage) -> None:
@@ -279,9 +290,28 @@ def _build_context(
     from ._memory import inject_into_context, load_memory
 
     ctx = Context()
-    picks, why = _pick_skills_for(task, session.skills_mode)
+    # Project-learned skills (self-improvement): distilled into .essarion/skills/
+    # and ranked alongside the bundled ones, so the agent gets better at *this*
+    # codebase the more it's used.
+    try:
+        from ._learned_skills import pool_bodies as _learned_pool
+
+        learned = _learned_pool(cwd)
+    except Exception:  # noqa: BLE001 - learned skills must never break a turn
+        learned = {}
+    picks, why = _pick_skills_for(task, session.skills_mode, learned=learned)
     if picks:
-        ctx.with_skills(picks)
+        from .. import list_skills as _bundled_names
+
+        bundled_set = set(_bundled_names())
+        # A learned skill that shadows a bundled name wins (project knowledge >
+        # generic), so it's injected as a custom skill, not loaded from the package.
+        bundled_picks = [p for p in picks if p in bundled_set and p not in learned]
+        if bundled_picks:
+            ctx.with_skills(bundled_picks)
+        for p in picks:
+            if p in learned:
+                ctx.with_custom_skill(p, learned[p])
     # Inject project memory (free signal — no model call).
     try:
         memory = load_memory(cwd)

@@ -571,6 +571,67 @@ def remember(fact: str) -> str:
     return f"remembered: {fact}"
 
 
+def distill_skill(name: str, body: str) -> str:
+    """Distill a reusable *skill* from what you just learned and save it to
+    project skills (`.essarion/skills/<name>.md`) — the skill picker weighs it
+    alongside the bundled skills on every future task, so the agent gets better
+    at *this* codebase over time.
+
+    Use this after solving something non-obvious whose lesson generalizes: a
+    house convention, a gotcha and its fix, the steps to wire a new component
+    here. Write it as a short markdown brief (a title, then a few crisp bullets
+    or a numbered procedure) — not a transcript. Re-distilling the same name
+    updates it. Secret-shaped values are refused; oversized bodies are trimmed.
+    """
+    from ._learned_skills import save_learned_skill, slugify
+
+    name = " ".join((name or "").split())
+    if not name:
+        raise ValueError("skill name must be non-empty")
+    if not (body or "").strip():
+        raise ValueError("skill body must be non-empty")
+    path, created = save_learned_skill(_SANDBOX_ROOT, name, body)
+    verb = "distilled" if created else "updated"
+    return f"{verb} skill '{slugify(name)}' → .essarion/skills/{path.name}"
+
+
+def recall(query: str, limit: int = 8) -> str:
+    """Search your own past sessions for what was decided, built, or tried here
+    before — read-only full-text recall across this project's saved sessions
+    (and the global store). Use it when the user points back at earlier work
+    ("like we did last time", "the auth fix from before") or to avoid redoing
+    something. Returns the best-matching turns, newest first.
+    """
+    from ._project import find_project_root
+    from ._session import search_sessions
+
+    query = " ".join((query or "").split())
+    if not query:
+        raise ValueError("recall needs a non-empty query")
+    try:
+        limit = max(1, min(int(limit), 25))
+    except (TypeError, ValueError):
+        limit = 8
+    project = find_project_root(_SANDBOX_ROOT)
+    sd = project.sessions_dir if project.has_essarion_dir else None
+    hits = search_sessions(query, sessions_dir=sd, limit=limit)
+    if not hits:
+        return f"(no past sessions mention {query!r})"
+    import time as _time
+
+    lines: list[str] = []
+    for h in hits:
+        when = (
+            _time.strftime("%Y-%m-%d", _time.localtime(h.started_at))
+            if h.started_at
+            else "?"
+        )
+        lines.append(
+            f"[{h.session_id} · turn {h.turn_index} · {when}] {h.task}\n    {h.snippet}"
+        )
+    return "\n".join(lines)
+
+
 def delete_file(path: str) -> str:
     """Delete a file under the sandbox root.
 
@@ -730,6 +791,8 @@ def register_all() -> None:
     sdk_tools.register_tool("delete_file", description="delete a file (undoable)")(delete_file)
     sdk_tools.register_tool("run_shell", description="run a shell command (blocking)")(run_shell)
     sdk_tools.register_tool("remember", description="save one durable project fact to memory")(remember)
+    sdk_tools.register_tool("distill_skill", description="distill a reusable skill (saved to .essarion/skills/) from what you learned")(distill_skill)
+    sdk_tools.register_tool("recall", description="search your own past sessions (full-text recall)")(recall)
     sdk_tools.register_tool("start_background", description="start a background task; returns id")(start_background)
     sdk_tools.register_tool("check_background", description="status + recent output of a task")(check_background)
     sdk_tools.register_tool("wait_background", description="block until a task finishes")(wait_background)

@@ -216,3 +216,104 @@ def new_session_id() -> str:
 
     ts = time.strftime("%Y%m%d-%H%M%S", time.localtime())
     return f"{ts}-{secrets.token_hex(2)}"
+
+
+class SessionHit(BaseModel):
+    """One matching turn found by :func:`search_sessions`."""
+
+    session_id: str
+    started_at: float = 0.0
+    turn_index: int = 0  # 1-based position within the session
+    task: str = ""
+    snippet: str = ""
+    score: int = 0
+
+
+def _excerpt(text: str, terms: list[str], width: int = 180) -> str:
+    """A window of `text` centered on the earliest matching term."""
+    low = text.lower()
+    pos = min(
+        (low.find(t) for t in terms if low.find(t) >= 0),
+        default=-1,
+    )
+    if pos < 0:
+        return " ".join(text.split())[:width]
+    start = max(0, pos - width // 3)
+    end = min(len(text), start + width)
+    chunk = " ".join(text[start:end].split())
+    return ("…" if start > 0 else "") + chunk + ("…" if end < len(text) else "")
+
+
+def search_sessions(
+    query: str,
+    *,
+    sessions_dir: str | Path | None = None,
+    limit: int = 20,
+    include_global: bool = True,
+) -> list[SessionHit]:
+    """Full-text recall across saved sessions — the zero-dependency answer to
+    "what did we decide / build / try before?".
+
+    Scores each turn by how often the query's terms appear across its task,
+    summary, plan, verdict, defense, and actions, then returns the best matches
+    newest-first. Searches `sessions_dir` (the per-project dir, when given) and,
+    by default, also the global `~/.essarion/sessions/` dir.
+    """
+    terms = [t for t in (query or "").lower().split() if t]
+    if not terms:
+        return []
+
+    dirs: list[Path] = []
+    if sessions_dir is not None:
+        dirs.append(session_dir(sessions_dir))
+    if include_global or sessions_dir is None:
+        g = session_dir()
+        if g not in dirs:
+            dirs.append(g)
+
+    seen: set[Path] = set()
+    hits: list[SessionHit] = []
+    for d in dirs:
+        for p in d.glob("*.json"):
+            if p in seen:
+                continue
+            seen.add(p)
+            try:
+                data = json.loads(p.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            sid = data.get("id") or p.stem
+            started = data.get("started_at") or 0.0
+            for i, turn in enumerate(data.get("history") or [], start=1):
+                if not isinstance(turn, dict):
+                    continue
+                task = str(turn.get("task", ""))
+                fields = [
+                    task,
+                    str(turn.get("summary", "")),
+                    str(turn.get("plan", "")),
+                    str(turn.get("verdict", "")),
+                    str(turn.get("defense", "")),
+                    " ".join(str(a) for a in (turn.get("actions") or [])),
+                ]
+                hay = "\n".join(fields).lower()
+                score = sum(hay.count(t) for t in terms)
+                if not score:
+                    continue
+                # A hit in the task line itself is the strongest signal.
+                score += 3 * sum(task.lower().count(t) for t in terms)
+                snippet_src = next(
+                    (f for f in fields if any(t in f.lower() for t in terms)), task
+                )
+                hits.append(
+                    SessionHit(
+                        session_id=sid,
+                        started_at=float(started),
+                        turn_index=i,
+                        task=task[:120],
+                        snippet=_excerpt(snippet_src, terms),
+                        score=score,
+                    )
+                )
+    hits.sort(key=lambda h: (-h.score, -h.started_at, h.turn_index))
+    return hits[:limit]

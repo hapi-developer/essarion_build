@@ -58,17 +58,18 @@ def _warn_if_key_missing(console: Console, provider: str) -> None:
 
 
 _HELP_GROUPS: list[tuple[str, list[str]]] = [
-    ("session", ["/whoami", "/history", "/summary", "/save", "/load", "/export", "/clear", "/version", "/quit"]),
+    ("session", ["/whoami", "/history", "/recall", "/summary", "/save", "/load", "/export", "/clear", "/version", "/quit"]),
     ("autonomy", ["/goal"]),
     ("planning", ["/ask"]),
     ("workflows", ["/workflows", "/review", "/fix", "/tests", "/refactor", "/docs", "/security", "/perf", "/explain", "/pr"]),
     ("reasoning", ["/effort"]),
     ("models & cost", ["/model", "/escalate", "/triage", "/crosscheck", "/budget", "/cost", "/stream", "/keys", "/reload"]),
-    ("skills & memory", ["/skills", "/remember", "/forget"]),
+    ("skills & memory", ["/skills", "/distill", "/remember", "/forget"]),
     ("project & files", ["/cd", "/pwd"]),
     ("code intelligence", ["/map", "/outline", "/symbol"]),
     ("changes & verify", ["/diff", "/undo", "/commit", "/verify", "/lint"]),
     ("background", ["/bg"]),
+    ("automation", ["/schedule"]),
     ("safety", ["/auto", "/computer", "/desktop", "/yolo", "/hooks"]),
     ("help", ["/help"]),
 ]
@@ -330,6 +331,24 @@ def _cmd_skills(console: Console, session: Session, args: str) -> CommandResult:
             cols = []
     if cols:
         console.print("  ".join(cols))
+    # Project-learned skills (self-improvement) the agent distilled over time.
+    from ._learned_skills import list_learned_skills
+
+    learned = list_learned_skills(session.cwd)
+    if learned:
+        console.print(
+            f"\n[meta]{len(learned)} learned skill(s) for this project "
+            f"(.essarion/skills/):[/meta]"
+        )
+        cols = []
+        for i, name in enumerate(learned):
+            cols.append(f"[skill]{name}[/skill]")
+            if (i + 1) % 4 == 0:
+                console.print("  ".join(cols))
+                cols = []
+        if cols:
+            console.print("  ".join(cols))
+    console.print("[hint]curate learned skills with /distill[/hint]")
     return "continue"
 
 
@@ -448,6 +467,129 @@ def _cmd_export(console: Console, session: Session, args: str) -> CommandResult:
     return "continue"
 
 
+def _cmd_recall(console: Console, session: Session, args: str) -> CommandResult:
+    """Full-text recall across past sessions: /recall <query>.
+
+    Searches what was decided, built, or tried before — the answer to "didn't
+    we already do this?" without re-loading a whole session."""
+    import time as _time
+
+    from ._session import search_sessions
+
+    query = args.strip()
+    if not query:
+        console.print("[err]usage: /recall <query>[/err]")
+        return "continue"
+    sd = _resolve_sessions_dir(session)
+    hits = search_sessions(query, sessions_dir=sd, limit=12)
+    if not hits:
+        console.print(f"[meta]no past sessions mention {query!r}[/meta]")
+        return "continue"
+    table = Table(title=f"recall · {query}", title_style="brand", show_lines=False)
+    table.add_column("session", style="key")
+    table.add_column("when", style="meta")
+    table.add_column("turn", justify="right", style="meta")
+    table.add_column("match", style="meta")
+    for h in hits:
+        when = (
+            _time.strftime("%Y-%m-%d", _time.localtime(h.started_at))
+            if h.started_at
+            else "?"
+        )
+        table.add_row(h.session_id, when, str(h.turn_index), h.snippet[:80])
+    console.print(table)
+    console.print("[hint]continue one with `essarion --resume <id>`[/hint]")
+    return "continue"
+
+
+def _cmd_schedule(console: Console, session: Session, args: str) -> CommandResult:
+    """Recurring tasks: /schedule [add <interval> <task> | rm <id> | run <id>].
+
+    Jobs persist to .essarion/schedule.json; run them unattended from cron with
+    `essarion schedule run-due` (see docs)."""
+    import time as _time
+
+    from ._schedule import format_interval, load_schedule, run_one
+
+    sched = load_schedule(session.cwd)
+    arg = args.strip()
+    if not arg:
+        if not sched.jobs:
+            console.print("[meta](no scheduled jobs)[/meta]")
+            console.print(
+                f"[hint]add one: /schedule add 1d <task>  ·  file: {sched.path}[/hint]"
+            )
+            return "continue"
+        table = Table(title="scheduled tasks", title_style="brand")
+        table.add_column("id", style="key")
+        table.add_column("every", style="meta")
+        table.add_column("next", style="meta")
+        table.add_column("on", justify="center")
+        table.add_column("task", style="meta")
+        for j in sched.jobs:
+            when = (
+                _time.strftime("%m-%d %H:%M", _time.localtime(j.next_run))
+                if j.next_run
+                else "?"
+            )
+            table.add_row(
+                j.id, format_interval(j.every), when,
+                "✓" if j.enabled else "·", j.task[:50],
+            )
+        console.print(table)
+        console.print(
+            "[hint]run unattended via cron: `essarion schedule run-due` (see docs)[/hint]"
+        )
+        return "continue"
+
+    parts = arg.split(None, 1)
+    verb = parts[0].lower()
+    rest = parts[1].strip() if len(parts) > 1 else ""
+    if verb == "add":
+        bits = rest.split(None, 1)
+        if len(bits) < 2:
+            console.print(
+                "[err]usage: /schedule add <interval> <task>  "
+                "(e.g. /schedule add 1d audit deps for CVEs)[/err]"
+            )
+            return "continue"
+        try:
+            job = sched.add(bits[1], bits[0])
+        except ValueError as e:
+            console.print(f"[err]{e}[/err]")
+            return "continue"
+        sched.save()
+        console.print(
+            f"[ok]scheduled {job.id}[/ok] "
+            f"[meta]every {format_interval(job.every)} · {job.task}[/meta]"
+        )
+        return "continue"
+    if verb == "rm":
+        if not rest:
+            console.print("[err]usage: /schedule rm <id>[/err]")
+            return "continue"
+        ok = sched.remove(rest)
+        sched.save()
+        console.print(f"[ok]removed {rest}[/ok]" if ok else f"[meta]no job {rest}[/meta]")
+        return "continue"
+    if verb == "run":
+        if not rest:
+            console.print("[err]usage: /schedule run <id>[/err]")
+            return "continue"
+        try:
+            with console.status("[brand]running scheduled task…[/brand]"):
+                status = run_one(session.cwd, rest)
+        except KeyError:
+            console.print(f"[meta]no job {rest}[/meta]")
+            return "continue"
+        console.print(f"[ok]{rest}: {status}[/ok]")
+        return "continue"
+    console.print(
+        "[err]usage: /schedule [add <interval> <task> | rm <id> | run <id>][/err]"
+    )
+    return "continue"
+
+
 def _cmd_yolo(console: Console, session: Session, args: str) -> CommandResult:
     """Toggle auto-approval of side-effect tools."""
     from . import _tools as t
@@ -516,6 +658,92 @@ def _cmd_forget(console: Console, session: Session, args: str) -> CommandResult:
         console.print(f"[ok]removed {removed} fact(s) matching {arg!r}[/ok]")
     else:
         console.print(f"[meta]no facts matched {arg!r}[/meta]")
+    return "continue"
+
+
+def _cmd_distill(console: Console, session: Session, args: str) -> CommandResult:
+    """Curate the project's learned skills (.essarion/skills/).
+
+    /distill                  list learned skills
+    /distill show <name>      print one learned skill's body
+    /distill <name>: <body>   save or update a learned skill
+    /distill forget <name>    delete a learned skill
+
+    The agent also distills skills autonomously via the `distill_skill` tool —
+    this command is for hand-curating them.
+    """
+    from ._learned_skills import (
+        forget_learned_skill,
+        learned_skills_dir,
+        list_learned_skills,
+        load_learned_skill,
+        save_learned_skill,
+    )
+
+    arg = args.strip()
+    directory = learned_skills_dir(session.cwd)
+    if not arg:
+        names = list_learned_skills(session.cwd)
+        if not names:
+            console.print("[meta](no learned skills yet)[/meta]")
+            console.print(
+                "[hint]the agent distills these automatically; or add one by hand: "
+                "/distill <name>: <body>[/hint]"
+            )
+            console.print(f"[hint]dir: {directory}[/hint]")
+            return "continue"
+        from rich.panel import Panel
+
+        body = "\n".join(f"- [skill]{n}[/skill]" for n in names)
+        console.print(
+            Panel(
+                body,
+                title="[brand]learned skills[/brand]",
+                border_style="brand",
+                padding=(0, 1),
+            )
+        )
+        console.print(
+            f"[hint]{directory}  ·  /distill <name>: <body>  ·  /distill forget <name>[/hint]"
+        )
+        return "continue"
+
+    parts = arg.split(None, 1)
+    verb = parts[0].lower()
+    if verb == "forget":
+        target = parts[1].strip() if len(parts) > 1 else ""
+        if not target:
+            console.print("[err]usage: /distill forget <name>[/err]")
+            return "continue"
+        if forget_learned_skill(session.cwd, target):
+            console.print(f"[ok]forgot skill {target!r}[/ok]")
+        else:
+            console.print(f"[meta]no learned skill matched {target!r}[/meta]")
+        return "continue"
+    if verb == "show" and len(parts) == 2:
+        try:
+            console.print(load_learned_skill(session.cwd, parts[1].strip()))
+        except FileNotFoundError as e:
+            console.print(f"[err]{e}[/err]")
+        return "continue"
+
+    if ":" not in arg:
+        console.print(
+            "[err]usage: /distill <name>: <body>  (or `/distill forget <name>`)[/err]"
+        )
+        return "continue"
+    name, body = arg.split(":", 1)
+    if not name.strip() or not body.strip():
+        console.print("[err]usage: /distill <name>: <body>[/err]")
+        return "continue"
+    try:
+        path, created = save_learned_skill(session.cwd, name.strip(), body.strip())
+    except ValueError as e:
+        console.print(f"[err]{e}[/err]")
+        return "continue"
+    console.print(
+        f"[ok]{'distilled' if created else 'updated'}[/ok] [meta]→ {path}[/meta]"
+    )
     return "continue"
 
 
@@ -1576,6 +1804,8 @@ COMMANDS: dict[str, tuple[Callable, str]] = {
     "/outline": (_cmd_outline, "list one file's symbols + signatures: /outline <file>"),
     "/symbol": (_cmd_symbol, "find where a symbol is defined and referenced: /symbol <name>"),
     "/history": (_cmd_history, "list this session's turns"),
+    "/recall": (_cmd_recall, "full-text recall across past sessions: /recall <query>"),
+    "/schedule": (_cmd_schedule, "recurring tasks: list / add <interval> <task> / rm <id> / run <id>"),
     "/save": (_cmd_save, "persist the session to the sessions dir"),
     "/load": (_cmd_load, "list saved sessions"),
     "/export": (_cmd_export, "dump session JSON to stdout"),
@@ -1583,6 +1813,7 @@ COMMANDS: dict[str, tuple[Callable, str]] = {
     "/bg": (_cmd_bg, "background tasks: run / list / show / wait / kill / clear"),
     "/remember": (_cmd_remember, "show or add a fact to project memory"),
     "/forget": (_cmd_forget, "remove fact(s) from project memory"),
+    "/distill": (_cmd_distill, "curate learned skills (.essarion/skills/): list / add / forget"),
     "/verify": (_cmd_verify, "run the project's check command (tests/lint)"),
     "/lint": (_cmd_lint, "lint the session's touched files (auto-detects ruff/eslint/clippy/gofmt)"),
     "/diff": (_cmd_diff, "show every change made this session"),

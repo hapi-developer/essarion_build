@@ -26,15 +26,23 @@ Legend: ✅ shipped · 🟡 partial · ⭕ open goal (not built yet)
 
 ## Surfaces
 - ✅ Terminal CLI · ✅ Web (cloud) chat UI with one sandbox per session + `.zip` export
+  · ✅ **CI** (GitHub Action: cross-model PR review)
 - ⭕ VS Code / JetBrains / Desktop / Mobile / Slack
 
 ## Codebase understanding
 - ✅ Inline read tools during planning (`read_file`/`grep`/`glob`/`list_dir`/`find_files`),
   auto-attach of named files + their sibling tests.
+- ✅ **Cross-session recall** — full-text search over saved sessions
+  (`recall` tool / `/recall`), so past decisions and builds are one query away.
+  (`_session.search_sessions`)
 - 🟡 Whole-repo semantic index — today it's heuristics + on-demand reads.
 
 ## Extensibility
-- ✅ **Skills** — bundled, with an auto/all/none picker.
+- ✅ **Skills** — 54 bundled, with an auto/all/none picker. **Self-improving:**
+  the agent distills reusable skills from experience into `.essarion/skills/`
+  (`distill_skill` / `/distill`), ranked by the picker alongside the bundled set
+  so it gets better at *this* codebase over time. Quality-gated (secret-screened,
+  size-capped, de-duplicated). (`_learned_skills.py`)
 - ✅ **Hooks** — shell commands that fire on lifecycle events (`pre_tool`,
   `post_tool`, `user_prompt`, `session_start`, `stop`), configured as
   `[[hooks]]` in `.essarion/config.toml`. `pre_tool` exit-2 blocks a tool
@@ -58,8 +66,13 @@ Legend: ✅ shipped · 🟡 partial · ⭕ open goal (not built yet)
 ## Automation & orchestration
 - 🟡 **Headless / SDK** — `--task` one-shot + the Python SDK (`reason`/`generate`).
   A full programmatic agent SDK is open.
-- ⭕ **Agent Teams** · ⭕ **Scheduled tasks (/loop, cron)** · ⭕ **GitHub/GitLab CI**
-  · ⭕ **Automated code review**
+- ✅ **Scheduled tasks** — `essarion schedule` (cron-style store + `run-due`,
+  drivable from system/CI cron or a `--loop` foreground runner). Recurring
+  reports, audits, digests in natural language, unattended. (`_schedule.py`)
+- ✅ **Automated code review** — `essarion-build review` (+ a ready-to-use GitHub
+  Action) reviews a diff with the plan→selfcheck loop AND an independent
+  cross-model second opinion; `--fail-on-disagree` gates CI. (`cli.cmd_review`)
+- ⭕ **Agent Teams** · ⭕ **GitHub/GitLab deploy automation**
 
 ## Computer & browser use
 - ✅ **Browser use** — opt-in (`/computer`, `--computer-use`): the agent drives
@@ -80,8 +93,14 @@ Legend: ✅ shipped · 🟡 partial · ⭕ open goal (not built yet)
 - **v0.4.0 — the extensibility trio**: MCP (`_mcp.py`), parallel
   context-isolated subagents (`_subagents.py`), and self-accumulating memory
   (the `remember` tool). All zero-dependency, all in both turn paths.
+- **v0.5.0 — self-improvement + automation** (the answer to Hermes Agent's
+  signature moats): self-improving skills the agent distills from experience
+  (`_learned_skills.py`), cross-session recall (`_session.search_sessions`),
+  scheduled/recurring tasks (`_schedule.py`), and a crosscheck-powered CI code
+  review (`cli.cmd_review` + a GitHub Action). See
+  `docs/COMPETITIVE-HERMES.md` for the full head-to-head. Still zero-dependency.
 
 ### Suggested next open goal
-**Scheduled tasks + automated code review** — a `/loop`-style recurring runner
-and a CI surface (GitHub Action) that reviews PRs with the crosscheck ensemble.
-After that: plugins/marketplaces, or the IDE surfaces. Say the word.
+**Sandbox backends + IDE surfaces.** A Docker/SSH execution backend (Hermes
+ships several) for hardened isolation, then the editor surfaces (VS Code /
+JetBrains). Plugins/marketplaces remain open too. Say the word.

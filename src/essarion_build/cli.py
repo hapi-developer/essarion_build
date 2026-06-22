@@ -5,6 +5,8 @@ Subcommands:
 - `essarion-build providers`                    list available providers
 - `essarion-build reason "<task>" [...]`        run a reason() loop and print output
 - `essarion-build generate "<task>" [...]`      run a generate() loop and print output
+- `essarion-build review [--diff F] [...]`      review a diff (+ cross-model 2nd opinion) for CI
+- `essarion-build schedule <action> [...]`      manage / run recurring tasks (cron-style)
 - `essarion-build estimate [--repo PATH]`       estimate token cost of a Context
 - `essarion-build version`                      print the version
 
@@ -99,6 +101,248 @@ def cmd_providers(args: argparse.Namespace) -> int:
 def cmd_version(args: argparse.Namespace) -> int:
     print(__version__)
     return 0
+
+
+_REVIEW_SKILLS = [
+    "code_review", "secure_coding", "error_handling",
+    "concurrency", "testing", "scope_discipline",
+]
+_REVIEW_GOAL = (
+    "Review this change for correctness, security, and edge-case bugs. "
+    "Cite file:line for each finding and end with whether it is safe to ship."
+)
+
+
+def _resolve_review_diff(args: argparse.Namespace) -> str:
+    """The diff to review: an explicit --diff file (or '-' for stdin), else
+    `git diff [<base>...HEAD]` in the repo."""
+    import subprocess
+
+    if getattr(args, "diff", None):
+        if args.diff == "-":
+            return sys.stdin.read()
+        return Path(args.diff).read_text(encoding="utf-8")
+    repo = getattr(args, "repo", None) or "."
+    cmd = ["git", "-C", repo, "diff"]
+    if getattr(args, "base", None):
+        cmd.append(f"{args.base}...HEAD")
+    try:
+        return subprocess.run(
+            cmd, capture_output=True, text=True, check=False
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def _render_review_markdown(r, opinion) -> str:
+    """Render a review (+ optional cross-model second opinion) as PR-ready
+    markdown."""
+    lines = [
+        "## 🔎 essarion-build review",
+        "",
+        f"**Verdict:** {(r.verdict or '—').strip()}",
+        "",
+        "### Findings",
+        (r.plan or "_no findings_").strip(),
+    ]
+    if opinion is not None:
+        lines += ["", f"### Cross-model second opinion — `{opinion.model}`"]
+        if not opinion.ok:
+            lines.append(f"_independent review call failed: {opinion.error}_")
+        else:
+            stance = (
+                "agree — safe to ship"
+                if opinion.agree and not opinion.concerns
+                else "concerns raised"
+            )
+            lines.append(f"**Independent stance:** {stance}")
+            if opinion.concerns:
+                lines.append("")
+                lines += [f"- {c}" for c in opinion.concerns]
+            if opinion.summary:
+                lines += ["", f"> {opinion.summary.strip()}"]
+        lines += [
+            "",
+            "_Two different models reviewed this change independently — "
+            "where they disagree is where bugs hide._",
+        ]
+    total = getattr(getattr(r, "usage", None), "total_tokens", 0)
+    lines += ["", f"<sub>essarion-build · {total:,} tokens</sub>"]
+    return "\n".join(lines)
+
+
+def cmd_review(args: argparse.Namespace) -> int:
+    """Review a diff with the plan→selfcheck loop, plus an optional INDEPENDENT
+    cross-model second opinion — the CI surface for essarion's crosscheck."""
+    from ._config import current
+    from ._providers import build_provider
+    from .agent._crosscheck import request_second_opinion
+
+    diff = _resolve_review_diff(args)
+    if not diff.strip():
+        print("(no diff to review)")
+        return 0
+
+    ctx = Context()
+    if getattr(args, "no_skills", False):
+        pass
+    elif getattr(args, "skill", None):
+        ctx.with_skills(list(args.skill))
+    else:
+        ctx.with_skills(_REVIEW_SKILLS)
+    if getattr(args, "repo", None):
+        ctx.add_repo(args.repo)
+    ctx.add_diff(diff, title=getattr(args, "base", None) or "review")
+
+    goal = getattr(args, "goal", None) or _REVIEW_GOAL
+    kwargs = _common_call_kwargs(args)
+    r = reason(goal, context=ctx, **kwargs)
+
+    opinion = None
+    if getattr(args, "crosscheck_model", None):
+        prov_name = getattr(args, "provider", None) or current().provider
+        try:
+            prov = build_provider(
+                name=prov_name, api_key=None, model=args.crosscheck_model
+            )
+            opinion = request_second_opinion(
+                prov, goal=goal, change=diff, model=args.crosscheck_model
+            )
+        except Exception as e:  # noqa: BLE001 - a failed 2nd opinion never blocks
+            print(f"# crosscheck unavailable: {e}", file=sys.stderr)
+
+    if args.json:
+        payload: dict[str, Any] = {
+            "verdict": r.verdict,
+            "findings": r.plan,
+            "tradeoffs": r.tradeoffs,
+            "usage": r.usage.model_dump(),
+        }
+        if opinion is not None:
+            payload["crosscheck"] = {
+                "model": opinion.model,
+                "agree": opinion.agree,
+                "disagrees": opinion.disagrees,
+                "concerns": opinion.concerns,
+                "summary": opinion.summary,
+                "ok": opinion.ok,
+                "error": opinion.error,
+            }
+        print(json.dumps(payload, indent=2))
+    else:
+        print(_render_review_markdown(r, opinion))
+
+    if getattr(args, "fail_on_disagree", False) and opinion is not None and opinion.disagrees:
+        return 3
+    return 0
+
+
+def cmd_schedule(args: argparse.Namespace) -> int:
+    """Manage and run recurring tasks (the cron-style automation surface)."""
+    import os
+    import time
+
+    from .agent._schedule import (
+        format_interval,
+        load_schedule,
+        run_due,
+        run_one,
+    )
+
+    cwd = getattr(args, "cwd", None) or os.getcwd()
+    action = args.action
+    sched = load_schedule(cwd)
+
+    if action == "list":
+        if not sched.jobs:
+            print("(no scheduled jobs)")
+            print(f"file: {sched.path}")
+            return 0
+        for j in sched.jobs:
+            when = (
+                time.strftime("%Y-%m-%d %H:%M", time.localtime(j.next_run))
+                if j.next_run
+                else "?"
+            )
+            state = "on " if j.enabled else "OFF"
+            label = f"  ·  {j.name}" if j.name else ""
+            print(
+                f"{j.id}  every {format_interval(j.every):>4}  [{state}]  "
+                f"next {when}  runs={j.runs}{label}"
+            )
+            print(f"        {j.task}")
+        return 0
+
+    if action == "add":
+        if not args.target or not args.every:
+            print('usage: essarion schedule add "<task>" --every 1d', file=sys.stderr)
+            return 2
+        try:
+            job = sched.add(
+                args.target,
+                args.every,
+                name=args.name or "",
+                model=args.model,
+                budget=args.budget,
+                due_now=args.now,
+            )
+        except ValueError as e:
+            print(str(e), file=sys.stderr)
+            return 2
+        sched.save()
+        print(f"added {job.id}: every {format_interval(job.every)} · {job.task}")
+        return 0
+
+    if action == "rm":
+        if not args.target:
+            print("usage: essarion schedule rm <id>", file=sys.stderr)
+            return 2
+        ok = sched.remove(args.target)
+        sched.save()
+        print(f"removed {args.target}" if ok else f"no job {args.target}")
+        return 0 if ok else 1
+
+    if action in ("enable", "disable"):
+        if not args.target:
+            print(f"usage: essarion schedule {action} <id>", file=sys.stderr)
+            return 2
+        ok = sched.set_enabled(args.target, action == "enable")
+        sched.save()
+        print(f"{action}d {args.target}" if ok else f"no job {args.target}")
+        return 0 if ok else 1
+
+    if action == "run":
+        if not args.target:
+            print("usage: essarion schedule run <id>", file=sys.stderr)
+            return 2
+        try:
+            status = run_one(cwd, args.target)
+        except KeyError:
+            print(f"no job {args.target}", file=sys.stderr)
+            return 1
+        print(f"{args.target}: {status}")
+        return 0
+
+    if action == "run-due":
+        if args.loop:
+            interval = max(5, int(args.loop))
+            print(
+                f"scheduler loop: re-checking every {interval}s (Ctrl-C to stop)",
+                file=sys.stderr,
+            )
+            while True:
+                for job, status in run_due(cwd):
+                    print(f"{time.strftime('%H:%M:%S')} ran {job.id}: {status}")
+                time.sleep(interval)
+        ran = run_due(cwd)
+        if not ran:
+            print("(nothing due)")
+        for job, status in ran:
+            print(f"ran {job.id}: {status}")
+        return 0
+
+    print(f"unknown action {action!r}", file=sys.stderr)
+    return 2
 
 
 def cmd_workflows(args: argparse.Namespace) -> int:
@@ -263,6 +507,62 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_workflows = sub.add_parser("workflows", help="List bundled workflows")
     p_workflows.set_defaults(func=cmd_workflows)
+
+    p_review = sub.add_parser(
+        "review",
+        help="Review a diff (+ optional cross-model second opinion) — the CI surface",
+    )
+    p_review.add_argument("--diff", help="Diff file to review ('-' for stdin)")
+    p_review.add_argument(
+        "--base", help="Git base ref; reviews `git diff <base>...HEAD` (CI/PRs)"
+    )
+    p_review.add_argument("--goal", help="What the change is meant to accomplish")
+    p_review.add_argument("--repo", help="Repo dir for context + git (default: .)")
+    p_review.add_argument("--skill", action="append", help="Override review skills (repeatable)")
+    p_review.add_argument("--no-skills", action="store_true", help="Review with no skills")
+    p_review.add_argument(
+        "--crosscheck-model",
+        help="A DIFFERENT model that independently red-teams the change",
+    )
+    p_review.add_argument(
+        "--fail-on-disagree",
+        action="store_true",
+        help="Exit 3 if the cross-model reviewer disagrees (gate CI on it)",
+    )
+    p_review.add_argument("--provider", help="Override provider")
+    p_review.add_argument("--model", help="Override model")
+    p_review.add_argument("--max-tokens", type=int, help="Override per-call max_tokens")
+    p_review.add_argument("--json", action="store_true", help="Emit JSON instead of markdown")
+    p_review.set_defaults(func=cmd_review)
+
+    p_sched = sub.add_parser(
+        "schedule", help="Manage recurring tasks (cron-style automation)"
+    )
+    p_sched.add_argument(
+        "action",
+        nargs="?",
+        default="list",
+        choices=["list", "add", "rm", "run", "run-due", "enable", "disable"],
+        help="what to do (default: list)",
+    )
+    p_sched.add_argument(
+        "target", nargs="?", help="task text (add) or job id (rm/run/enable/disable)"
+    )
+    p_sched.add_argument("--every", help="interval: 30s / 10m / 2h / 1d / 1w")
+    p_sched.add_argument("--name", help="label for the job")
+    p_sched.add_argument("--model", help="model override for this job")
+    p_sched.add_argument("--budget", type=float, help="USD budget for this job")
+    p_sched.add_argument(
+        "--now", action="store_true", help="(add) make the job due immediately"
+    )
+    p_sched.add_argument(
+        "--loop",
+        type=int,
+        metavar="SECONDS",
+        help="(run-due) keep running, re-checking every SECONDS",
+    )
+    p_sched.add_argument("--cwd", help="project dir (default: current dir)")
+    p_sched.set_defaults(func=cmd_schedule)
 
     p_estimate = sub.add_parser(
         "estimate", help="Estimate token cost of a Context"
