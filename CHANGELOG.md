@@ -7,15 +7,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Cost-and-quality release: stop the agent from burning a budget on reading
-before it answers, make the spending cap actually hold (and still return value
-when it's hit), and sharpen analysis with structural/security reasoning and
-file-grounded output. Headlined by **cross-model second opinion** — an
-independent, different model that red-teams every change for pennies — and
-**`.env` that just works**. All zero-dependency (standard library only).
+### Security
+
+- **`web_fetch` is now SSRF-guarded.** The tool fetches URLs the *model*
+  chooses, and that choice can be steered by untrusted content the agent just
+  read — so a fetch could be aimed at the cloud metadata endpoint
+  (`169.254.169.254`), `localhost`, or a private-range host (in the cloud
+  product each session is a container with internal sidecars). `web_fetch` now
+  refuses any URL whose host resolves to a non-public address — private,
+  loopback, link-local, multicast, reserved, IPv4-mapped — and re-validates
+  every redirect hop, so a public URL that 302s inward is caught too.
+  Still standard-library only (`agent/_ssrf.py`).
+
+## [0.4.0] - 2026-06-11
+
+The extensibility release — the three biggest items on the roadmap land at
+once, closing the gap to (and past) the mainstream agents: **MCP** (plug in
+any external tool server), **parallel subagents with context isolation**
+(fan out wide work without burning the lead agent's context), and
+**self-accumulating memory** (the agent persists what it learns). Plus the
+full cost-and-quality line: an exploration cap so the agent stops reading and
+starts answering, a spending cap that holds *before* the bill, cross-model
+second opinions, and `.env` that just works. All still zero-dependency
+(standard library only).
 
 ### Added
 
+- **MCP support (`[[mcp_servers]]`, `/mcp`) — connect any Model Context
+  Protocol server.** A zero-dependency JSON-RPC 2.0 client over the MCP stdio
+  transport (the transport virtually every real server speaks: `npx
+  @modelcontextprotocol/server-*`, `uvx mcp-server-*`, local binaries).
+  Declare servers in `.essarion/config.toml` or `~/.config/essarion/
+  config.toml`; each tool a server advertises becomes a first-class agent
+  tool (`mcp__<server>__<tool>`) — in the manifest with its real argument
+  names, callable in the autonomous loop, rendered as a compact `MCP
+  github · create_issue` action line. `/mcp` shows live servers + tools;
+  `/mcp reconnect` retries after a config fix; servers shut down cleanly with
+  the session. Server results are treated as untrusted external data and
+  size-capped before the model sees them; env values are never printed.
+- **Parallel subagents with context isolation (`spawn_subagents`).** The lead
+  agent can fan out up to 8 scoped workers that run *concurrently*, each in
+  its own fresh executor with its own context (project memory + conventions +
+  repo map — not the parent's conversation). Only each worker's final summary
+  returns to the parent, so a wide sweep costs the lead agent a paragraph
+  instead of a context window. Guardrails built in: subagents are
+  non-interactive (`ask_user` is answered with "decide yourself"; permission
+  decisions that would *ask* are **denied** instead — never a hung prompt in a
+  worker thread), can be `read_only`, can never spawn further subagents
+  (depth cap 1), get tighter step/read budgets, and their mutations flow
+  through the same change log (`/undo`, `/diff`) and usage/cost meter as the
+  parent's.
+- **Self-accumulating memory (`remember` tool).** The agent now *maintains its
+  own* project memory: when it learns a durable fact mid-run (a convention, a
+  gotcha, where something lives, a decision you made) it persists it to
+  `.essarion/memory.md` — deduplicated, whitespace-normalized, length-capped,
+  and **secret-screened** (anything key/token-shaped is refused). Facts come
+  back in every future turn's context. `/remember` and `/forget` still curate
+  by hand. This closes the "memory" roadmap item end to end: auto-read was
+  already in (AGENTS.md / CLAUDE.md / `.cursorrules` conventions), and now
+  the write side is automatic too.
 - **Cross-model second opinion (`/crosscheck`, `--crosscheck-model`) — a feature
   no mainstream coding agent ships.** A *different* model independently red-teams
   every change before it lands, seeing only the goal and the diff (never the
@@ -849,6 +899,7 @@ The `essarion-build` console script is preserved unchanged.
 ### Tests
 - Suite grew from 26 to 42 cases. Added coverage for tag repair (happy path, failed repair, no-repair-needed), usage arithmetic and aggregation, per-call `max_tokens` override, and HTTP error mapping / retry behavior via `httpx.MockTransport`.
 
-[Unreleased]: https://github.com/hapi-developer/essarion_build/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/hapi-developer/essarion_build/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/hapi-developer/essarion_build/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/hapi-developer/essarion_build/releases/tag/v0.3.0
 [0.2.0]: https://github.com/hapi-developer/essarion_build/releases/tag/v0.2.0

@@ -242,10 +242,26 @@ class _FakeResp:
         return False
 
 
+class _FakeOpener:
+    def __init__(self, resp_or_exc):
+        self._r = resp_or_exc
+    def open(self, *a, **k):
+        if isinstance(self._r, Exception):
+            raise self._r
+        return self._r
+
+
+def _patch_fetch(monkeypatch, resp_or_exc):
+    """Make the SSRF precheck pass and route open() through a fake opener, so
+    these tests exercise web_fetch's parsing without real DNS/network."""
+    from essarion_build.agent import _ssrf
+    monkeypatch.setattr(_ssrf, "assert_public_url", lambda url: None)
+    monkeypatch.setattr(_ssrf, "build_safe_opener", lambda: _FakeOpener(resp_or_exc))
+
+
 def test_web_fetch_strips_html(monkeypatch) -> None:
-    import urllib.request
     body = b"<html><body><h1>Title</h1><script>alert(1)</script><p>Paragraph</p></body></html>"
-    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: _FakeResp(body))
+    _patch_fetch(monkeypatch, _FakeResp(body))
     out = _tools.web_fetch("http://example.test")
     assert "Title" in out and "Paragraph" in out
     assert "alert" not in out  # script content dropped
@@ -253,11 +269,7 @@ def test_web_fetch_strips_html(monkeypatch) -> None:
 
 def test_web_fetch_network_error_is_graceful(monkeypatch) -> None:
     import urllib.error
-    import urllib.request
 
-    def _boom(*a, **k):
-        raise urllib.error.URLError("blocked")
-
-    monkeypatch.setattr(urllib.request, "urlopen", _boom)
+    _patch_fetch(monkeypatch, urllib.error.URLError("blocked"))
     out = _tools.web_fetch("http://example.test")
     assert out.startswith("(could not fetch")

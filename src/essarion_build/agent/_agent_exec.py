@@ -37,6 +37,7 @@ from .._windowing import head_tail_window
 from ._changes import current_changelog
 from ._permissions import ASK, DENY, PermissionPolicy
 from ._session import Session, TaskTurn, estimate_cost_usd
+from ._subagents import MAX_SUBAGENTS as _MAX_SUBAGENTS_HINT
 from . import _ui
 
 
@@ -48,8 +49,19 @@ AUTONOMOUS_ALLOW = {
     "repo_map", "outline", "find_symbol", "web_fetch",
     "write_file", "apply_diff", "edit_symbol", "delete_file", "run_shell",
     "start_background", "check_background", "wait_background",
-    "kill_background", "list_background",
+    "kill_background", "list_background", "remember",
 }
+
+
+def default_allow() -> set[str]:
+    """The autonomous loop's live allow-list: the built-in tools plus every
+    tool a connected MCP server advertises (mcp__server__tool)."""
+    try:
+        from . import _mcp
+
+        return AUTONOMOUS_ALLOW | _mcp.active_tool_names()
+    except Exception:  # noqa: BLE001 - MCP must never break the core loop
+        return set(AUTONOMOUS_ALLOW)
 # Of those, the ones that change files on disk (for files_touched accounting).
 _MUTATING = {"write_file", "apply_diff", "edit_symbol", "delete_file"}
 
@@ -127,7 +139,7 @@ def _infer_url(cmd: str) -> str | None:
     return None
 
 
-def _system_prompt(ctx: Context, memory: str = "") -> str:
+def _system_prompt(ctx: Context, memory: str = "", *, subagents: bool = False) -> str:
     """Build the executor's system prompt: protocol + memory + manifest + context."""
     manifest = sdk_tools.tool_manifest()
     context_block = ctx.to_prompt_block()
@@ -194,9 +206,31 @@ def _system_prompt(ctx: Context, memory: str = "") -> str:
         "- Some commands need approval or are blocked by the user's permission "
         "policy. If a tool result says an action was blocked, adapt (try another "
         "approach) or ask the user — do NOT just retry the same command.\n"
+        "- When you learn a DURABLE fact about this project worth keeping across "
+        "sessions — a convention, a gotcha, where something important lives, a "
+        "decision the user made — save it once with:\n"
+        "  <tool_call name=\"remember\">{\"fact\": \"tests must run with -p no:cacheprovider\"}</tool_call>\n"
+        "  Only genuinely reusable facts; never session noise or secrets.\n"
         "- When the goal is complete (or the question answered), emit exactly:\n"
         "  <done>a one-line summary of what you did</done>"
     )
+    if subagents:
+        protocol += (
+            "\n- For LARGE tasks that split into independent chunks — sweeping "
+            "many modules, auditing several areas, building separable pieces — "
+            "fan out PARALLEL subagents instead of doing everything serially:\n"
+            "  <tool_call name=\"spawn_subagents\">{\"tasks\": [{\"name\": \"auth-sweep\", "
+            "\"task\": \"Audit src/auth/ for input-validation bugs; report file:line "
+            "findings\", \"read_only\": true}, {\"name\": \"api-tests\", \"task\": \"Write "
+            "pytest tests for src/api.py\"}]}</tool_call>\n"
+            "  Each subagent works in its own context and returns only its summary, "
+            "so a wide exploration stays cheap for you. Give each a tight, "
+            "self-contained brief (it can't see this conversation or ask questions); "
+            "set read_only true for pure exploration/analysis. Up to "
+            f"{_MAX_SUBAGENTS_HINT} in one call; they run concurrently and you get "
+            "all results back at once. Don't spawn one for a task you can do in a "
+            "couple of steps yourself."
+        )
     # Order matters for prompt caching: the stable prefix (protocol + tool
     # manifest, identical every turn) comes first so providers can cache it
     # across turns; the volatile parts (memory, picked skills, notes) come last.
@@ -273,6 +307,8 @@ def _conversation_memory(session: Session) -> str:
 def _verb_for(name: str, existed: bool) -> str:
     if name == "write_file":
         return "Updated" if existed else "Created"
+    if name.startswith("mcp__"):
+        return "MCP"
     return {
         "apply_diff": "Edited", "edit_symbol": "Edited", "delete_file": "Deleted",
         "read_file": "Read", "list_dir": "Listed", "grep": "Searched",
@@ -281,10 +317,18 @@ def _verb_for(name: str, existed: bool) -> str:
         "web_fetch": "Fetched", "start_background": "Started",
         "check_background": "Checked task", "wait_background": "Waited on task",
         "kill_background": "Killed task", "list_background": "Listed tasks",
+        "remember": "Remembered",
     }.get(name, f"Used {name}")
 
 
 def _target_for(name: str, args: dict[str, Any]) -> str:
+    if name.startswith("mcp__"):
+        # mcp__github__create_issue → "github · create_issue"
+        parts = name.split("__", 2)
+        return " · ".join(parts[1:]) if len(parts) == 3 else name
+    if name == "remember":
+        fact = str(args.get("fact", ""))
+        return fact if len(fact) <= 60 else fact[:59].rstrip() + "…"
     if name in {"write_file", "apply_diff", "delete_file", "read_file", "outline"}:
         return str(args.get("path", ""))
     if name == "edit_symbol":
@@ -538,23 +582,32 @@ def execute(
     allow: set[str] | None = None,
     extra_system: str = "",
     policy: PermissionPolicy | None = None,
+    interactive: bool = True,
+    read_cap_override: int = 0,
 ) -> ExecResult:
     """Drive tools autonomously to accomplish `goal`. Writes directly to disk.
 
     `make_runtime(provider, model)` yields a runtime whose `._provider` exposes
     the raw `complete()` seam (passed in so the caller's stub/patch is honored).
     `turn`, if given, accumulates usage/cost so the session budget and footer
-    stay accurate.
+    stay accurate. `interactive=False` (a subagent run) disables ask_user and
+    subagent spawning, and turns would-ask permission decisions into denials —
+    there is no user at the keyboard to answer.
     """
     runtime = make_runtime(session.provider, session.model)
     provider = runtime._provider  # raw text-in/text-out completion seam
 
-    allow = allow or AUTONOMOUS_ALLOW
+    allow = allow or default_allow()
+    # Only a top-level (user-facing) run may fan out — a subagent spawning
+    # subagents is a fork bomb, not a feature.
+    can_spawn = interactive
     policy = policy or PermissionPolicy()
     from . import _tools as _t
 
     yolo = bool(getattr(_t, "_AUTO_APPROVE", False))
-    system = _system_prompt(ctx, memory=_conversation_memory(session))
+    system = _system_prompt(
+        ctx, memory=_conversation_memory(session), subagents=can_spawn
+    )
     if extra_system.strip():
         system += "\n\n" + extra_system.strip()
     user = f"GOAL:\n{goal.strip()}\n"
@@ -570,7 +623,7 @@ def execute(
     nudges = 0  # consecutive no-action steps we've prodded the model through
     reads = 0  # read-only exploration calls made this turn (exploration budget)
     over_read_budget = False
-    read_cap = session.read_cap or _DEFAULT_READ_CAP
+    read_cap = read_cap_override or session.read_cap or _DEFAULT_READ_CAP
 
     step = 0  # bound even if max_steps <= 0 so `result.steps = step` is safe
     for step in range(1, max_steps + 1):
@@ -663,9 +716,69 @@ def execute(
             # ask_user is interactive — handled here (not via the headless
             # registry) so it can prompt the real user and feed the choice back.
             if name == "ask_user":
+                if not interactive:
+                    result_blocks.append(
+                        '<tool_result name="ask_user">no interactive user is '
+                        "available in a subagent — choose the most reasonable "
+                        "option yourself and proceed.</tool_result>"
+                    )
+                    continue
                 body = _ui.ask_user_questions(console, args)
                 actions_log.append("Asked the user a question")
                 result_blocks.append(f'<tool_result name="ask_user">{body}</tool_result>')
+                continue
+
+            # spawn_subagents fans out parallel, context-isolated workers and
+            # feeds back only their summaries. Handled here (not the registry)
+            # because it needs the session, runtime factory and policy.
+            if name == "spawn_subagents":
+                if not can_spawn:
+                    result_blocks.append(
+                        '<tool_result name="spawn_subagents" error="true">'
+                        "subagents cannot spawn subagents — do this part of the "
+                        "task yourself.</tool_result>"
+                    )
+                    continue
+                from . import _subagents
+
+                try:
+                    specs = _subagents.parse_specs(args)
+                except ValueError as e:
+                    result_blocks.append(
+                        f'<tool_result name="spawn_subagents" error="true">{e}</tool_result>'
+                    )
+                    continue
+                labels = ", ".join(s.name for s in specs)
+                _ui.render_action(
+                    console, verb="Spawned", target=f"{len(specs)} subagent(s): {labels}", ok=True,
+                )
+                with console.status(
+                    f"[brand]{len(specs)} subagent(s) working…[/brand]", spinner="line"
+                ):
+                    outcomes = _subagents.run_subagents(
+                        specs, session, make_runtime=make_runtime, policy=policy,
+                    )
+                for o in outcomes:
+                    _ui.render_action(
+                        console,
+                        verb="Subagent",
+                        target=f"{o.name} — {o.stopped_reason}"
+                        + (f" ({o.error})" if o.error else ""),
+                        ok=not o.error,
+                    )
+                    actions_log.append(
+                        f"Subagent {o.name}: {o.stopped_reason}" + (" (failed)" if o.error else "")
+                    )
+                    if turn is not None:
+                        turn.usage = turn.usage + o.usage
+                        turn.cost_usd += o.cost_usd
+                    for p in o.files_touched:
+                        if p not in touched:
+                            touched.append(p)
+                body = _subagents.format_outcomes(outcomes)
+                result_blocks.append(
+                    f'<tool_result name="spawn_subagents">{head_tail_window(body, max_chars=12_000)}</tool_result>'
+                )
                 continue
 
             # update_todos maintains the agent's visible checklist. We only
@@ -679,7 +792,10 @@ def execute(
 
             # Permission policy: allow / ask (confirm) / deny. Reads are free;
             # shell commands are screened against the dangerous-command list.
+            # In a non-interactive run there is nobody to ask → ask becomes deny.
             decision, reason = policy.decide(name, args, yolo=yolo)
+            if decision == ASK and not interactive:
+                decision, reason = DENY, (reason + " (no user to approve it in a subagent)").strip()
             if decision == DENY or (
                 decision == ASK
                 and not _ui.confirm_action(console, _verb_for(name, False), _target_for(name, args), reason)
@@ -707,7 +823,7 @@ def execute(
             verb = _verb_for(name, existed)
             target = _target_for(name, args)
             diffstat = _diff_stat(args) if (name == "apply_diff" and ok) else None
-            show_output = (not shown_ok) or name in _SHOW_OUTPUT or name.startswith(("browser_", "desktop_"))
+            show_output = (not shown_ok) or name in _SHOW_OUTPUT or name.startswith(("browser_", "desktop_", "mcp__"))
             _ui.render_action(
                 console, verb=verb, target=target, ok=shown_ok, diffstat=diffstat,
                 output=body if show_output else "",
