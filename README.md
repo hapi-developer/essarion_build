@@ -1001,6 +1001,14 @@ from essarion_build.auth import from_platform_api   # raises NotImplementedError
 
 No plugin loader (custom providers + custom skills cover the same surface) and no embeddings/RAG (use the `Context.add_repo(include=...)` filter). The `CloudRuntime` is still a stub (raises `CloudRuntimeNotAvailable`), and the Sourcipedia / Agent-skill interop hooks are placeholder seams (see above).
 
+## Privacy & data handling
+
+`essarion-build` runs on your machine and is bring-your-own-key: Essarion
+operates no server for it and collects no telemetry. Your prompts and context
+go only to the model provider(s) and tools you configure, under their own
+terms. See [PRIVACY.md](./PRIVACY.md) for the full note, including the local-only
+telemetry hook and the autonomous-agent safety disclaimer.
+
 ## License
 
-Apache-2.0.
+Apache-2.0. See [LICENSE](./LICENSE).
